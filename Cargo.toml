@@ -1,0 +1,18 @@
+[package]
+name = "sekigae-rs"
+license = "MIT"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chrono = "0.4.42"
+eframe = "0.33.3"
+rfd = "0.17.2"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+sekigae3 = { git = "https://github.com/371tti/sekigae3", branch = "master" }
+typst = "0.14.2"
+typst-as-lib = { git = "https://github.com/Relacibo/typst-as-lib", rev = "a9a87a95ec1732e64c1a0369a77f2642c03418ce" }
+typst-pdf = "0.14.2"
+typst-render = "0.14.2"
+typst-svg = "0.14.2"
