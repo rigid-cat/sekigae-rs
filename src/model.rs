@@ -3,16 +3,36 @@ pub struct Student {
     pub name: String,
     pub number: u16,
     pub targets: Vec<Target>,
+    pub forced_targets: Vec<Target>,
     pub close_to: Vec<u16>,
+    #[allow(dead_code)]
+    pub forced_close_to: Vec<u16>,
+    #[allow(dead_code)]
+    pub avoid: Vec<u16>,
+    #[allow(dead_code)]
+    pub forced_avoid: Vec<u16>,
 }
 
 impl Student {
-    pub fn new(name: &str, number: u16, targets: Vec<Target>, close_to: Vec<u16>) -> Self {
+    pub fn new(
+        name: &str,
+        number: u16,
+        targets: Vec<Target>,
+        forced_targets: Vec<Target>,
+        close_to: Vec<u16>,
+        forced_close_to: Vec<u16>,
+        avoid: Vec<u16>,
+        forced_avoid: Vec<u16>,
+    ) -> Self {
         Self {
             name: name.to_string(),
             number,
             targets,
+            forced_targets,
             close_to,
+            forced_close_to,
+            avoid,
+            forced_avoid,
         }
     }
 }
@@ -33,6 +53,7 @@ impl Target {
 pub struct AnnealingConfig {
     pub seed: u64,
     pub budget: usize,
+    pub randomness: f32,
 }
 
 #[derive(Clone, Debug)]

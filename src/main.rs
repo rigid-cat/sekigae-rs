@@ -1,6 +1,7 @@
 mod gui;
 mod model;
 mod solver;
+mod fetch;
 
 use gui::SekigaeApp;
 

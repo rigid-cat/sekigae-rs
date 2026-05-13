@@ -4,15 +4,16 @@ use eframe::egui::{
 };
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use typst::layout::PagedDocument;
 use typst_as_lib::TypstEngine;
 
+use crate::fetch::{fetch_student_preferences, parse_targets, SeatRange};
 use crate::model::{AnnealingConfig, SeatingResult, Student, Target};
 use crate::solver::find_best_seating_with_blocked;
 
@@ -79,6 +80,36 @@ enum UiStage {
     SolveExport,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TargetEditMode {
+    Soft,
+    Forced,
+}
+
+impl TargetEditMode {
+    fn title(self) -> &'static str {
+        match self {
+            TargetEditMode::Soft => "希望席",
+            TargetEditMode::Forced => "確定希望",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ResultDisplayMode {
+    All,
+    Random,
+}
+
+impl ResultDisplayMode {
+    fn title(self) -> &'static str {
+        match self {
+            ResultDisplayMode::All => "一括表示",
+            ResultDisplayMode::Random => "ランダム表示",
+        }
+    }
+}
+
 impl UiStage {
     const ALL: [UiStage; 4] = [
         UiStage::Setup,
@@ -128,11 +159,16 @@ pub struct SekigaeApp {
     export_svg: bool,
     png_ppi: u16,
     config: AnnealingConfig,
+    target_edit_mode: TargetEditMode,
+    result_display_mode: ResultDisplayMode,
     result: Option<SeatingResult>,
     last_error: Option<String>,
     last_info: Option<String>,
     is_solving: bool,
     solver_rx: Option<Receiver<Result<SeatingResult, String>>>,
+    // アニメーション表示用
+    animation_displayed_indices: Vec<usize>,
+    animation_last_update: std::time::Instant,
 }
 
 #[derive(Clone, Debug)]
@@ -143,7 +179,11 @@ struct StudentForm {
     last_kana: String,
     first_kana: String,
     targets: Vec<usize>,
+    forced_targets: Vec<usize>,
     close_to: Vec<u16>,
+    forced_close_to: Vec<u16>,
+    avoid: Vec<u16>,
+    forced_avoid: Vec<u16>,
 }
 
 #[derive(Clone, Debug)]
@@ -159,6 +199,22 @@ struct StudentProfile {
     last_kana: String,
     first_kana: String,
     targets: Vec<usize>,
+    #[serde(default)]
+    forced_targets: Vec<usize>,
+    #[serde(default)]
+    close_to: Vec<u16>,
+    #[serde(default)]
+    forced_close_to: Vec<u16>,
+    #[serde(default)]
+    avoid: Vec<u16>,
+    #[serde(default)]
+    forced_avoid: Vec<u16>,
+}
+
+#[derive(Deserialize)]
+struct PreferencesConfig {
+    preferences_url: String,
+    seat_preferences: HashMap<String, SeatRange>,
 }
 
 #[derive(Serialize)]
@@ -194,7 +250,11 @@ impl SekigaeApp {
                 last_kana: String::new(),
                 first_kana: String::new(),
                 targets: Vec::new(),
+                forced_targets: Vec::new(),
                 close_to: Vec::new(),
+                forced_close_to: Vec::new(),
+                avoid: Vec::new(),
+                forced_avoid: Vec::new(),
             }],
             selected_student: Some(0),
             target_presets: Vec::new(),
@@ -214,12 +274,17 @@ impl SekigaeApp {
             config: AnnealingConfig {
                 seed: 0,
                 budget: rows * cols,
+                randomness: 0.0,
             },
+            target_edit_mode: TargetEditMode::Soft,
+            result_display_mode: ResultDisplayMode::Random,
             result: None,
             last_error: None,
             last_info: None,
             is_solving: false,
             solver_rx: None,
+            animation_displayed_indices: Vec::new(),
+            animation_last_update: Instant::now(),
         }
     }
 
@@ -282,6 +347,8 @@ impl SekigaeApp {
         match rx.try_recv() {
             Ok(Ok(result)) => {
                 self.result = Some(result);
+                self.animation_displayed_indices.clear();
+                self.animation_last_update = Instant::now();
                 self.set_info("席替えを実行しました。".to_string());
                 self.is_solving = false;
                 self.solver_rx = None;
@@ -339,7 +406,9 @@ impl SekigaeApp {
         self.config = AnnealingConfig {
             seed: 0,
             budget: self.rows * self.cols,
+            randomness: 0.0,
         };
+        self.target_edit_mode = TargetEditMode::Soft;
 
         self.result = None;
         self.last_error = None;
@@ -391,7 +460,11 @@ impl SekigaeApp {
             last_kana: String::new(),
             first_kana: String::new(),
             targets: Vec::new(),
+            forced_targets: Vec::new(),
             close_to: Vec::new(),
+            forced_close_to: Vec::new(),
+            avoid: Vec::new(),
+            forced_avoid: Vec::new(),
         }
     }
 
@@ -489,6 +562,42 @@ impl SekigaeApp {
         out
     }
 
+    fn sanitize_target_list(&self, targets: &[usize]) -> Vec<usize> {
+        Self::sanitize_targets_for_grid(self.seat_count(), &self.empty_seats, targets)
+    }
+
+    fn targets_to_model_targets(&self, indices: &[usize]) -> Vec<Target> {
+        let mut targets = self
+            .sanitize_target_list(indices)
+            .into_iter()
+            .map(|seat_idx| Target::new(seat_idx % self.cols, seat_idx / self.cols))
+            .collect::<Vec<_>>();
+        targets.sort_by_key(|t| (t.r, t.c));
+        targets.dedup();
+        targets
+    }
+
+    fn toggle_target_list(targets: &mut Vec<usize>, seat_idx: usize) {
+        if let Some(pos) = targets.iter().position(|idx| *idx == seat_idx) {
+            targets.remove(pos);
+        } else {
+            targets.push(seat_idx);
+            targets.sort_unstable();
+            targets.dedup();
+        }
+    }
+
+    fn normalize_student_targets(student: &mut StudentForm, seat_count: usize, empty_seats: &[bool]) {
+        student.targets = Self::sanitize_targets_for_grid(seat_count, empty_seats, &student.targets);
+        student.forced_targets = Self::sanitize_targets_for_grid(
+            seat_count,
+            empty_seats,
+            &student.forced_targets,
+        );
+        let forced = student.forced_targets.clone();
+        student.targets.retain(|seat_idx| !forced.contains(seat_idx));
+    }
+
     fn apply_grid_transform(
         &mut self,
         new_rows: usize,
@@ -531,6 +640,16 @@ impl SekigaeApp {
             mapped.sort_unstable();
             mapped.dedup();
             student.targets = mapped;
+
+            let mut forced_mapped = student
+                .forced_targets
+                .iter()
+                .filter_map(|old_idx| old_to_new.get(*old_idx).copied().flatten())
+                .filter(|new_idx| *new_idx < self.empty_seats.len() && !self.empty_seats[*new_idx])
+                .collect::<Vec<_>>();
+            forced_mapped.sort_unstable();
+            forced_mapped.dedup();
+            student.forced_targets = forced_mapped;
         }
 
         for preset in &mut self.target_presets {
@@ -672,6 +791,7 @@ impl SekigaeApp {
         if is_empty {
             for student in &mut self.students {
                 student.targets.retain(|idx| *idx != seat_idx);
+                student.forced_targets.retain(|idx| *idx != seat_idx);
             }
             for preset in &mut self.target_presets {
                 preset.targets.retain(|idx| *idx != seat_idx);
@@ -680,7 +800,7 @@ impl SekigaeApp {
         true
     }
 
-    fn toggle_target(&mut self, student_idx: usize, seat_idx: usize) {
+    fn toggle_target(&mut self, student_idx: usize, seat_idx: usize, forced: bool) {
         if student_idx >= self.students.len()
             || seat_idx >= self.seat_count()
             || self.empty_seats[seat_idx]
@@ -688,16 +808,32 @@ impl SekigaeApp {
             return;
         }
 
-        if let Some(pos) = self.students[student_idx]
-            .targets
-            .iter()
-            .position(|idx| *idx == seat_idx)
-        {
-            self.students[student_idx].targets.remove(pos);
+        let student = &mut self.students[student_idx];
+
+        if forced {
+            if let Some(pos) = student
+                .forced_targets
+                .iter()
+                .position(|idx| *idx == seat_idx)
+            {
+                student.forced_targets.remove(pos);
+            } else {
+                Self::toggle_target_list(&mut student.forced_targets, seat_idx);
+                if let Some(pos) = student.targets.iter().position(|idx| *idx == seat_idx) {
+                    student.targets.remove(pos);
+                }
+            }
+        } else if let Some(pos) = student.targets.iter().position(|idx| *idx == seat_idx) {
+            student.targets.remove(pos);
         } else {
-            self.students[student_idx].targets.push(seat_idx);
-            self.students[student_idx].targets.sort_unstable();
-            self.students[student_idx].targets.dedup();
+            Self::toggle_target_list(&mut student.targets, seat_idx);
+            if let Some(pos) = student
+                .forced_targets
+                .iter()
+                .position(|idx| *idx == seat_idx)
+            {
+                student.forced_targets.remove(pos);
+            }
         }
 
         self.clear_result_if_needed();
@@ -709,6 +845,15 @@ impl SekigaeApp {
             return;
         }
         self.students[student_idx].targets.clear();
+        self.clear_result_if_needed();
+        self.clear_messages();
+    }
+
+    fn clear_forced_targets(&mut self, student_idx: usize) {
+        if student_idx >= self.students.len() {
+            return;
+        }
+        self.students[student_idx].forced_targets.clear();
         self.clear_result_if_needed();
         self.clear_messages();
     }
@@ -769,6 +914,11 @@ impl SekigaeApp {
             last_kana: form.last_kana.trim().to_string(),
             first_kana: form.first_kana.trim().to_string(),
             targets: form.targets.clone(),
+            forced_targets: form.forced_targets.clone(),
+            close_to: form.close_to.clone(),
+            forced_close_to: form.forced_close_to.clone(),
+            avoid: form.avoid.clone(),
+            forced_avoid: form.forced_avoid.clone(),
         }
     }
 
@@ -780,22 +930,16 @@ impl SekigaeApp {
             .iter()
             .enumerate()
             .map(|(i, entry)| {
-                let mut targets = entry
-                    .targets
-                    .iter()
-                    .filter(|seat_idx| {
-                        **seat_idx < self.seat_count() && !self.empty_seats[**seat_idx]
-                    })
-                    .map(|seat_idx| Target::new(seat_idx % self.cols, seat_idx / self.cols))
-                    .collect::<Vec<_>>();
-
-                targets.sort_by_key(|t| (t.r, t.c));
-                targets.dedup();
+                let targets = self.targets_to_model_targets(&entry.targets);
+                let forced_targets = self.targets_to_model_targets(&entry.forced_targets);
 
                 let name = Self::student_display_name(entry, i);
                 let number = assigned_ids.get(i).copied().unwrap_or(u16::MAX);
                 let close_to = Self::sanitize_relation_ids(&entry.close_to, number, &valid_ids);
-                Student::new(&name, number, targets, close_to)
+                let forced_close_to = Self::sanitize_relation_ids(&entry.forced_close_to, number, &valid_ids);
+                let avoid = Self::sanitize_relation_ids(&entry.avoid, number, &valid_ids);
+                let forced_avoid = Self::sanitize_relation_ids(&entry.forced_avoid, number, &valid_ids);
+                Student::new(&name, number, targets, forced_targets, close_to, forced_close_to, avoid, forced_avoid)
             })
             .collect()
     }
@@ -897,6 +1041,21 @@ impl SekigaeApp {
             return String::new();
         }
         self.targets_to_summary(&self.students[student_idx].targets)
+    }
+
+    fn forced_target_summary(&self, student_idx: usize) -> String {
+        if student_idx >= self.students.len() {
+            return String::new();
+        }
+        self.targets_to_summary(&self.students[student_idx].forced_targets)
+    }
+
+    fn avoid_summary(&self, student_idx: usize) -> String {
+        if student_idx >= self.students.len() {
+            return String::new();
+        }
+        let avoid_ids = &self.students[student_idx].avoid;
+        avoid_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(", ")
     }
 
     fn register_current_as_preset(&mut self, student_idx: usize) {
@@ -1060,9 +1219,19 @@ impl SekigaeApp {
                 last_kana: profile.last_kana,
                 first_kana: profile.first_kana,
                 targets: profile.targets,
+                forced_targets: profile.forced_targets,
                 close_to: Vec::new(),
+                forced_close_to: profile.forced_close_to,
+                avoid: profile.avoid,
+                forced_avoid: profile.forced_avoid,
             })
             .collect();
+
+        let seat_count = self.seat_count();
+        let empty_seats = self.empty_seats.clone();
+        for student in &mut self.students {
+            Self::normalize_student_targets(student, seat_count, &empty_seats);
+        }
 
         self.selected_student = if self.students.is_empty() {
             None
@@ -1075,6 +1244,86 @@ impl SekigaeApp {
             "{} 人の生徒情報を読み込みました。",
             self.students.len()
         ));
+    }
+
+    fn load_preferences_config() -> Result<PreferencesConfig, String> {
+        let text = fs::read_to_string("config.json")
+            .map_err(|err| format!("config.json の読み込みに失敗しました: {}", err))?;
+
+        serde_json::from_str(&text)
+            .map_err(|err| format!("config.json の形式が不正です: {}", err))
+    }
+
+    fn import_preferences_from_forms(&mut self) {
+        self.clear_messages();
+
+        if self.students.is_empty() {
+            self.set_error("生徒がいません。先に生徒を追加してください。");
+            return;
+        }
+
+        let config = match Self::load_preferences_config() {
+            Ok(config) => config,
+            Err(err) => {
+                self.set_error(err);
+                return;
+            }
+        };
+
+        let fetched = match fetch_student_preferences(&config.preferences_url) {
+            Ok(value) => value,
+            Err(err) => {
+                self.set_error(format!("フォームの取得に失敗しました: {}", err));
+                return;
+            }
+        };
+
+        let assigned_ids = self.assign_student_ids();
+        let valid_ids = assigned_ids.iter().copied().collect::<HashSet<_>>();
+        let seat_count = self.seat_count();
+        let empty_seats = self.empty_seats.clone();
+        let rows = self.rows;
+        let cols = self.cols;
+        let mut updated = 0usize;
+
+        for (idx, student) in self.students.iter_mut().enumerate() {
+            let Some(&id) = assigned_ids.get(idx) else {
+                continue;
+            };
+
+            let Some(pref) = fetched.get(&id) else {
+                continue;
+            };
+
+            // フェッチした席位置の希望は確定希望に設定
+            student.forced_targets = parse_targets(
+                &pref.seat_targets_raw,
+                rows,
+                cols,
+                &config.seat_preferences,
+            );
+            // forced_seat_targets_raw は targets に設定（ソフト希望として）
+            student.targets = parse_targets(
+                &pref.forced_seat_targets_raw,
+                rows,
+                cols,
+                &config.seat_preferences,
+            );
+            student.close_to = pref.close_to.clone();
+            student.avoid = pref.avoid.clone();
+            Self::normalize_student_targets(student, seat_count, &empty_seats);
+            student.close_to = Self::sanitize_relation_ids(&student.close_to, id, &valid_ids);
+            student.avoid = Self::sanitize_relation_ids(&student.avoid, id, &valid_ids);
+            updated += 1;
+        }
+
+        if updated == 0 {
+            self.set_error("取得したフォーム回答に、現在の生徒IDと一致するデータがありませんでした。");
+            return;
+        }
+
+        self.clear_result_if_needed();
+        self.set_info(format!("フォームの希望を {} 人分反映しました。", updated));
     }
 
     fn write_json_value<T: Serialize>(path: &Path, value: &T, label: &str) -> Result<(), String> {
@@ -1493,6 +1742,16 @@ impl SekigaeApp {
                     );
                 });
                 ui.label("budget = 0 のときは実行時に利用可能席数を使用");
+
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label("希望ランダム性");
+                    ui.add(
+                        eframe::egui::Slider::new(&mut self.config.randomness, 0.0..=1.0)
+                            .show_value(true),
+                    );
+                });
+                ui.label("0 = 希望優先 / 1 = ソフト希望を無視してランダム寄り（確定希望のみ残る）");
             });
         });
 
@@ -1632,6 +1891,7 @@ impl SekigaeApp {
 
         let mut pick_students_json = false;
         let mut load_students_json = false;
+        let mut import_preferences = false;
         let mut add_student = false;
         let mut remove_selected = false;
         let mut student_changed = false;
@@ -1666,6 +1926,9 @@ impl SekigaeApp {
                     if ui.button("読み込む").clicked() {
                         load_students_json = true;
                     }
+                    if ui.button("フォームから希望を反映").clicked() {
+                        import_preferences = true;
+                    }
                 });
 
                 ui.separator();
@@ -1697,6 +1960,10 @@ impl SekigaeApp {
                         ui.label(format!(
                             "現在の希望席: {}",
                             self.target_summary(student_idx)
+                        ));
+                        ui.label(format!(
+                            "現在の遠ざかり希望: {}",
+                            self.avoid_summary(student_idx)
                         ));
                         ui.add_space(8.0);
 
@@ -1775,6 +2042,10 @@ impl SekigaeApp {
             self.load_students_from_json();
         }
 
+        if import_preferences {
+            self.import_preferences_from_forms();
+        }
+
         if remove_selected
             && let Some(idx) = self.selected_student
             && idx < self.students.len()
@@ -1837,8 +2108,15 @@ impl SekigaeApp {
         }
 
         let mut clear_targets_for_selected = false;
+        let mut clear_forced_targets_for_selected = false;
         let mut clear_close_to_for_selected = false;
+        let clear_forced_close_to_for_selected = false;
+        let mut clear_avoid_for_selected = false;
+        let clear_forced_avoid_for_selected = false;
         let mut toggle_close_to_ids = Vec::new();
+        let mut toggle_forced_close_to_ids = Vec::new();
+        let mut toggle_avoid_ids = Vec::new();
+        let mut toggle_forced_avoid_ids = Vec::new();
         let mut register_preset = false;
         let mut apply_preset_idx: Option<usize> = None;
         let mut remove_preset_idx: Option<usize> = None;
@@ -1873,9 +2151,31 @@ impl SekigaeApp {
                         "現在の希望席: {}",
                         self.target_summary(student_idx)
                     ));
+                    ui.label(format!(
+                        "現在の確定希望: {}",
+                        self.forced_target_summary(student_idx)
+                    ));
+
+                    ui.horizontal(|ui| {
+                        ui.label("編集モード");
+                        ui.selectable_value(
+                            &mut self.target_edit_mode,
+                            TargetEditMode::Soft,
+                            TargetEditMode::Soft.title(),
+                        );
+                        ui.selectable_value(
+                            &mut self.target_edit_mode,
+                            TargetEditMode::Forced,
+                            TargetEditMode::Forced.title(),
+                        );
+                    });
 
                     if ui.button("この生徒の希望席をクリア").clicked() {
                         clear_targets_for_selected = true;
+                    }
+
+                    if ui.button("この生徒の確定希望をクリア").clicked() {
+                        clear_forced_targets_for_selected = true;
                     }
 
                     ui.add_space(8.0);
@@ -1883,11 +2183,15 @@ impl SekigaeApp {
                     ui.label(RichText::new("隣になりたい生徒 (sekigae3)").strong());
                     ui.label("クリックでON/OFFを切り替え");
 
-                    let close_to_summary = if self.students[student_idx].close_to.is_empty() {
+                    let close_to_list = match self.target_edit_mode {
+                        TargetEditMode::Soft => &self.students[student_idx].close_to,
+                        TargetEditMode::Forced => &self.students[student_idx].forced_close_to,
+                    };
+
+                    let close_to_summary = if close_to_list.is_empty() {
                         "指定なし".to_string()
                     } else {
-                        self.students[student_idx]
-                            .close_to
+                        close_to_list
                             .iter()
                             .map(|id| {
                                 if let Some(name) = id_to_name.get(id) {
@@ -1899,7 +2203,7 @@ impl SekigaeApp {
                             .collect::<Vec<_>>()
                             .join(", ")
                     };
-                    ui.label(format!("現在の隣希望: {}", close_to_summary));
+                    ui.label(format!("現在の隣希望 ({}): {}", self.target_edit_mode.title(), close_to_summary));
 
                     if ui.button("この生徒の隣希望をクリア").clicked() {
                         clear_close_to_for_selected = true;
@@ -1918,15 +2222,82 @@ impl SekigaeApp {
                                     continue;
                                 };
 
-                                let selected =
-                                    self.students[student_idx].close_to.contains(&other_id);
+                                let selected = match self.target_edit_mode {
+                                    TargetEditMode::Soft => self.students[student_idx].close_to.contains(&other_id),
+                                    TargetEditMode::Forced => self.students[student_idx].forced_close_to.contains(&other_id),
+                                };
                                 let label = format!(
                                     "#{} {}",
                                     other_id,
                                     Self::student_display_name(other_student, other_idx)
                                 );
                                 if ui.selectable_label(selected, label).clicked() {
-                                    toggle_close_to_ids.push(other_id);
+                                    match self.target_edit_mode {
+                                        TargetEditMode::Soft => toggle_close_to_ids.push(other_id),
+                                        TargetEditMode::Forced => toggle_forced_close_to_ids.push(other_id),
+                                    }
+                                }
+                            }
+                        });
+
+                    ui.add_space(8.0);
+                    ui.separator();
+                    ui.label(RichText::new("遠ざかりたい生徒 (sekigae3)").strong());
+                    ui.label("クリックでON/OFFを切り替え");
+
+                    let avoid_list = match self.target_edit_mode {
+                        TargetEditMode::Soft => &self.students[student_idx].avoid,
+                        TargetEditMode::Forced => &self.students[student_idx].forced_avoid,
+                    };
+
+                    let avoid_summary = if avoid_list.is_empty() {
+                        "指定なし".to_string()
+                    } else {
+                        avoid_list
+                            .iter()
+                            .map(|id| {
+                                if let Some(name) = id_to_name.get(id) {
+                                    format!("#{} {}", id, name)
+                                } else {
+                                    format!("#{}", id)
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    };
+                    ui.label(format!("現在の遠ざかり希望 ({}): {}", self.target_edit_mode.title(), avoid_summary));
+
+                    if ui.button("この生徒の遠ざかり希望をクリア").clicked() {
+                        clear_avoid_for_selected = true;
+                    }
+
+                    ui.add_space(4.0);
+                    egui::ScrollArea::vertical()
+                        .max_height(150.0)
+                        .show(ui, |ui| {
+                            for (other_idx, other_student) in self.students.iter().enumerate() {
+                                if other_idx == student_idx {
+                                    continue;
+                                }
+
+                                let Some(&other_id) = assigned_ids.get(other_idx) else {
+                                    continue;
+                                };
+
+                                let selected = match self.target_edit_mode {
+                                    TargetEditMode::Soft => self.students[student_idx].avoid.contains(&other_id),
+                                    TargetEditMode::Forced => self.students[student_idx].forced_avoid.contains(&other_id),
+                                };
+                                let label = format!(
+                                    "#{} {}",
+                                    other_id,
+                                    Self::student_display_name(other_student, other_idx)
+                                );
+                                if ui.selectable_label(selected, label).clicked() {
+                                    match self.target_edit_mode {
+                                        TargetEditMode::Soft => toggle_avoid_ids.push(other_id),
+                                        TargetEditMode::Forced => toggle_forced_avoid_ids.push(other_id),
+                                    }
                                 }
                             }
                         });
@@ -1966,7 +2337,7 @@ impl SekigaeApp {
             });
 
             columns[1].group(|ui| {
-                ui.label(RichText::new("希望席マップ").strong());
+                ui.label(RichText::new(format!("{}マップ", self.target_edit_mode.title())).strong());
                 ui.add_space(6.0);
 
                 if let Some(student_idx) = self.selected_student
@@ -1996,8 +2367,14 @@ impl SekigaeApp {
                                                 continue;
                                             }
 
-                                            let selected =
-                                                self.students[student_idx].targets.contains(&idx);
+                                            let selected = match self.target_edit_mode {
+                                                TargetEditMode::Soft => {
+                                                    self.students[student_idx].targets.contains(&idx)
+                                                }
+                                                TargetEditMode::Forced => self.students[student_idx]
+                                                    .forced_targets
+                                                    .contains(&idx),
+                                            };
 
                                             let button = Button::new(RichText::new(label).color(
                                                 if selected {
@@ -2013,7 +2390,11 @@ impl SekigaeApp {
                                             });
 
                                             if ui.add_sized(seat_cell_size, button).clicked() {
-                                                self.toggle_target(student_idx, idx);
+                                                self.toggle_target(
+                                                    student_idx,
+                                                    idx,
+                                                    matches!(self.target_edit_mode, TargetEditMode::Forced),
+                                                );
                                             }
                                         }
                                         ui.end_row();
@@ -2032,12 +2413,46 @@ impl SekigaeApp {
             self.clear_targets(student_idx);
         }
 
+        if clear_forced_targets_for_selected && let Some(student_idx) = self.selected_student {
+            self.clear_forced_targets(student_idx);
+        }
+
         if clear_close_to_for_selected
             && let Some(student_idx) = self.selected_student
             && student_idx < self.students.len()
             && !self.students[student_idx].close_to.is_empty()
         {
             self.students[student_idx].close_to.clear();
+            self.clear_result_if_needed();
+            self.clear_messages();
+        }
+
+        if clear_forced_close_to_for_selected
+            && let Some(student_idx) = self.selected_student
+            && student_idx < self.students.len()
+            && !self.students[student_idx].forced_close_to.is_empty()
+        {
+            self.students[student_idx].forced_close_to.clear();
+            self.clear_result_if_needed();
+            self.clear_messages();
+        }
+
+        if clear_avoid_for_selected
+            && let Some(student_idx) = self.selected_student
+            && student_idx < self.students.len()
+            && !self.students[student_idx].avoid.is_empty()
+        {
+            self.students[student_idx].avoid.clear();
+            self.clear_result_if_needed();
+            self.clear_messages();
+        }
+
+        if clear_forced_avoid_for_selected
+            && let Some(student_idx) = self.selected_student
+            && student_idx < self.students.len()
+            && !self.students[student_idx].forced_avoid.is_empty()
+        {
+            self.students[student_idx].forced_avoid.clear();
             self.clear_result_if_needed();
             self.clear_messages();
         }
@@ -2068,6 +2483,84 @@ impl SekigaeApp {
             }
         }
 
+        if !toggle_forced_close_to_ids.is_empty()
+            && let Some(student_idx) = self.selected_student
+            && student_idx < self.students.len()
+        {
+            let self_id = assigned_ids.get(student_idx).copied().unwrap_or(0);
+            let mut forced_close_to = self.students[student_idx].forced_close_to.clone();
+
+            for id in toggle_forced_close_to_ids {
+                if id == self_id {
+                    continue;
+                }
+                if let Some(pos) = forced_close_to.iter().position(|target| *target == id) {
+                    forced_close_to.remove(pos);
+                } else {
+                    forced_close_to.push(id);
+                }
+            }
+
+            forced_close_to = Self::sanitize_relation_ids(&forced_close_to, self_id, &valid_ids);
+            if forced_close_to != self.students[student_idx].forced_close_to {
+                self.students[student_idx].forced_close_to = forced_close_to;
+                self.clear_result_if_needed();
+                self.clear_messages();
+            }
+        }
+
+        if !toggle_avoid_ids.is_empty()
+            && let Some(student_idx) = self.selected_student
+            && student_idx < self.students.len()
+        {
+            let self_id = assigned_ids.get(student_idx).copied().unwrap_or(0);
+            let mut avoid = self.students[student_idx].avoid.clone();
+
+            for id in toggle_avoid_ids {
+                if id == self_id {
+                    continue;
+                }
+                if let Some(pos) = avoid.iter().position(|target| *target == id) {
+                    avoid.remove(pos);
+                } else {
+                    avoid.push(id);
+                }
+            }
+
+            avoid = Self::sanitize_relation_ids(&avoid, self_id, &valid_ids);
+            if avoid != self.students[student_idx].avoid {
+                self.students[student_idx].avoid = avoid;
+                self.clear_result_if_needed();
+                self.clear_messages();
+            }
+        }
+
+        if !toggle_forced_avoid_ids.is_empty()
+            && let Some(student_idx) = self.selected_student
+            && student_idx < self.students.len()
+        {
+            let self_id = assigned_ids.get(student_idx).copied().unwrap_or(0);
+            let mut forced_avoid = self.students[student_idx].forced_avoid.clone();
+
+            for id in toggle_forced_avoid_ids {
+                if id == self_id {
+                    continue;
+                }
+                if let Some(pos) = forced_avoid.iter().position(|target| *target == id) {
+                    forced_avoid.remove(pos);
+                } else {
+                    forced_avoid.push(id);
+                }
+            }
+
+            forced_avoid = Self::sanitize_relation_ids(&forced_avoid, self_id, &valid_ids);
+            if forced_avoid != self.students[student_idx].forced_avoid {
+                self.students[student_idx].forced_avoid = forced_avoid;
+                self.clear_result_if_needed();
+                self.clear_messages();
+            }
+        }
+
         if register_preset && let Some(student_idx) = self.selected_student {
             self.register_current_as_preset(student_idx);
         }
@@ -2086,18 +2579,59 @@ impl SekigaeApp {
         }
     }
 
-    fn render_result_grid(&self, ui: &mut egui::Ui, result: &SeatingResult) {
+    fn render_result_grid(&mut self, ui: &mut egui::Ui, result: &SeatingResult) {
         let seat_cell_size = self.seat_cell_size();
         let built_students = self.build_students();
 
         ui.label(format!("sekigae3 cost: {:.3}", result.cost));
 
+        // 表示形式選択（ランダム表示のときのみメッセージ表示）
+        ui.horizontal(|ui| {
+            ui.label("表示方法:");
+            ui.selectable_value(
+                &mut self.result_display_mode,
+                ResultDisplayMode::All,
+                ResultDisplayMode::All.title(),
+            );
+            ui.selectable_value(
+                &mut self.result_display_mode,
+                ResultDisplayMode::Random,
+                ResultDisplayMode::Random.title(),
+            );
+        });
+
+        if self.result_display_mode == ResultDisplayMode::Random {
+            ui.label("(1秒ごとにランダムに生徒を表示)");
+
+            // 1秒ごとにランダムに生徒を追加表示
+            if self.animation_last_update.elapsed() >= Duration::from_secs(1) {
+                let all_student_indices: Vec<usize> = (0..built_students.len()).collect();
+                let remaining: Vec<usize> = all_student_indices
+                    .iter()
+                    .filter(|idx| !self.animation_displayed_indices.contains(idx))
+                    .copied()
+                    .collect();
+
+                if !remaining.is_empty() {
+                    // より良い乱数生成：複数の値を組み合わせる
+                    let now = Instant::now();
+                    let seed = (now.elapsed().subsec_nanos() as u64)
+                        .wrapping_mul(2654435761)
+                        .wrapping_add(self.animation_displayed_indices.len() as u64);
+                    let random_idx = remaining[(seed as usize) % remaining.len()];
+                    self.animation_displayed_indices.push(random_idx);
+                    self.animation_last_update = Instant::now();
+                }
+            }
+        }
+
         ui.add_space(6.0);
         egui::ScrollArea::both()
             .id_salt("result-seat-map-scroll")
             .auto_shrink([false, false])
-            .max_height(460.0)
+            .max_height(500.0)
             .show(ui, |ui| {
+                ui.set_min_width(500.0);
                 egui::Grid::new("result-grid")
                     .num_columns(self.cols)
                     .spacing([6.0, 6.0])
@@ -2117,13 +2651,29 @@ impl SekigaeApp {
 
                                 let text = match result.layout.get(idx).and_then(|x| *x) {
                                     Some(student_idx) if student_idx < built_students.len() => {
-                                        let student = &built_students[student_idx];
-                                        format!("{}({})", student.name, student.number)
+                                        // 表示モードで判定
+                                        let should_display = match self.result_display_mode {
+                                            ResultDisplayMode::All => true,
+                                            ResultDisplayMode::Random => self.animation_displayed_indices.contains(&student_idx),
+                                        };
+
+                                        if should_display {
+                                            let student = &built_students[student_idx];
+                                            // 名前の長さに関わらず、サイズを統一
+                                            let short_name = if student.name.len() > 4 {
+                                                format!("{}…", &student.name[..3])
+                                            } else {
+                                                student.name.clone()
+                                            };
+                                            format!("{}({})", short_name, student.number)
+                                        } else {
+                                            "?".to_string()
+                                        }
                                     }
                                     _ => "-".to_string(),
                                 };
 
-                                ui.add_sized(seat_cell_size, Button::new(text));
+                                ui.add_sized(seat_cell_size, Button::new(RichText::new(text).monospace()));
                             }
                             ui.end_row();
                         }
@@ -2286,8 +2836,16 @@ impl SekigaeApp {
                 }
 
                 ui.add_space(8.0);
-                if let Some(result) = &self.result {
-                    self.render_result_grid(ui, result);
+                if self.result.is_some() {
+                    // 表示モード変更時はアニメーション状態をリセット
+                    if self.result_display_mode == ResultDisplayMode::All {
+                        let built_students = self.build_students();
+                        self.animation_displayed_indices = (0..built_students.len()).collect();
+                    }
+
+                    ui.add_space(4.0);
+                    let result = self.result.as_ref().unwrap().clone();
+                    self.render_result_grid(ui, &result);
                 } else {
                     ui.label("まだ結果がありません。左上のボタンで席替えを実行してください。");
                 }
@@ -2327,6 +2885,11 @@ impl eframe::App for SekigaeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.apply_text_style(ctx);
         self.poll_solver_result(ctx);
+
+        // 結果表示中はアニメーションが進行中のため、毎フレーム再描画
+        if self.result.is_some() {
+            ctx.request_repaint();
+        }
 
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical()
