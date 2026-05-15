@@ -509,6 +509,42 @@ impl SekigaeApp {
         [87.6, 40.0]
     }
 
+    fn result_cell_size(&self) -> [f32; 2] {
+        [112.0, 54.0]
+    }
+
+    fn render_result_display_mode_selector(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label("表示方法:");
+            let mut changed = false;
+            changed |= ui
+                .selectable_value(
+                    &mut self.result_display_mode,
+                    ResultDisplayMode::All,
+                    ResultDisplayMode::All.title(),
+                )
+                .changed();
+            changed |= ui
+                .selectable_value(
+                    &mut self.result_display_mode,
+                    ResultDisplayMode::Random,
+                    ResultDisplayMode::Random.title(),
+                )
+                .changed();
+
+            if changed {
+                self.animation_displayed_indices.clear();
+                self.animation_last_update = Instant::now();
+            }
+        });
+
+        if self.result_display_mode == ResultDisplayMode::Random {
+            ui.label("(1秒ごとにランダムに生徒を表示)");
+        } else {
+            ui.label("(一括で表示)");
+        }
+    }
+
     fn apply_text_style(&self, ctx: &egui::Context) {
         let mut style = (*ctx.style()).clone();
         let base: f32 = 18.0;
@@ -2580,29 +2616,12 @@ impl SekigaeApp {
     }
 
     fn render_result_grid(&mut self, ui: &mut egui::Ui, result: &SeatingResult) {
-        let seat_cell_size = self.seat_cell_size();
+        let seat_cell_size = self.result_cell_size();
         let built_students = self.build_students();
 
         ui.label(format!("sekigae3 cost: {:.3}", result.cost));
 
-        // 表示形式選択（ランダム表示のときのみメッセージ表示）
-        ui.horizontal(|ui| {
-            ui.label("表示方法:");
-            ui.selectable_value(
-                &mut self.result_display_mode,
-                ResultDisplayMode::All,
-                ResultDisplayMode::All.title(),
-            );
-            ui.selectable_value(
-                &mut self.result_display_mode,
-                ResultDisplayMode::Random,
-                ResultDisplayMode::Random.title(),
-            );
-        });
-
         if self.result_display_mode == ResultDisplayMode::Random {
-            ui.label("(1秒ごとにランダムに生徒を表示)");
-
             // 1秒ごとにランダムに生徒を追加表示
             if self.animation_last_update.elapsed() >= Duration::from_secs(1) {
                 let all_student_indices: Vec<usize> = (0..built_students.len()).collect();
@@ -2659,13 +2678,7 @@ impl SekigaeApp {
 
                                         if should_display {
                                             let student = &built_students[student_idx];
-                                            // 名前の長さに関わらず、サイズを統一
-                                            let short_name = if student.name.len() > 4 {
-                                                format!("{}…", &student.name[..3])
-                                            } else {
-                                                student.name.clone()
-                                            };
-                                            format!("{}({})", short_name, student.number)
+                                            format!("{}\n({})", student.name, student.number)
                                         } else {
                                             "?".to_string()
                                         }
@@ -2673,7 +2686,10 @@ impl SekigaeApp {
                                     _ => "-".to_string(),
                                 };
 
-                                ui.add_sized(seat_cell_size, Button::new(RichText::new(text).monospace()));
+                                ui.add_sized(
+                                    seat_cell_size,
+                                    Button::new(RichText::new(text).size(13.0)),
+                                );
                             }
                             ui.end_row();
                         }
@@ -2836,14 +2852,10 @@ impl SekigaeApp {
                 }
 
                 ui.add_space(8.0);
-                if self.result.is_some() {
-                    // 表示モード変更時はアニメーション状態をリセット
-                    if self.result_display_mode == ResultDisplayMode::All {
-                        let built_students = self.build_students();
-                        self.animation_displayed_indices = (0..built_students.len()).collect();
-                    }
+                self.render_result_display_mode_selector(ui);
+                ui.add_space(4.0);
 
-                    ui.add_space(4.0);
+                if self.result.is_some() {
                     let result = self.result.as_ref().unwrap().clone();
                     self.render_result_grid(ui, &result);
                 } else {
