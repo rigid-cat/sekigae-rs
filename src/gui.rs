@@ -186,10 +186,17 @@ struct StudentForm {
     forced_avoid: Vec<u16>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct TargetPreset {
     name: String,
     targets: Vec<usize>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct StudentsJsonDocument {
+    students: BTreeMap<u16, StudentProfile>,
+    #[serde(default)]
+    target_presets: Vec<TargetPreset>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -958,6 +965,25 @@ impl SekigaeApp {
         }
     }
 
+    fn sanitize_preset_targets(&self, targets: &[usize]) -> Vec<usize> {
+        Self::sanitize_targets_for_grid(self.seat_count(), &self.empty_seats, targets)
+    }
+
+    fn upsert_target_preset(&mut self, preset: TargetPreset) {
+        let mut preset = preset;
+        preset.targets = self.sanitize_preset_targets(&preset.targets);
+
+        if let Some(existing_idx) = self
+            .target_presets
+            .iter()
+            .position(|existing| existing.name == preset.name)
+        {
+            self.target_presets[existing_idx] = preset;
+        } else {
+            self.target_presets.push(preset);
+        }
+    }
+
     fn build_students(&self) -> Vec<Student> {
         let assigned_ids = self.assign_student_ids();
         let valid_ids = assigned_ids.iter().copied().collect::<HashSet<_>>();
@@ -1105,11 +1131,7 @@ impl SekigaeApp {
             return;
         }
 
-        let targets = Self::sanitize_targets_for_grid(
-            self.seat_count(),
-            &self.empty_seats,
-            &self.students[student_idx].targets,
-        );
+        let targets = self.sanitize_preset_targets(&self.students[student_idx].targets);
 
         if let Some(existing_idx) = self
             .target_presets
@@ -1222,31 +1244,37 @@ impl SekigaeApp {
             }
         };
 
-        let raw: BTreeMap<String, StudentProfile> = match serde_json::from_str(&text) {
-            Ok(value) => value,
-            Err(err) => {
-                self.set_error(format!("json の形式が不正です: {}", err));
-                return;
-            }
-        };
-
-        let mut parsed = Vec::new();
-        for (id_text, profile) in raw {
-            let id = match id_text.parse::<u16>() {
-                Ok(id) if id > 0 => id,
-                _ => {
-                    self.set_error(format!(
-                        "students.json のキー '{}' は 1..65535 の数値文字列にしてください。",
-                        id_text
-                    ));
+        let mut loaded_presets = Vec::new();
+        let parsed_students: BTreeMap<u16, StudentProfile> = if let Ok(document) = serde_json::from_str::<StudentsJsonDocument>(&text) {
+            loaded_presets = document.target_presets;
+            document.students
+        } else {
+            let raw: BTreeMap<String, StudentProfile> = match serde_json::from_str(&text) {
+                Ok(value) => value,
+                Err(err) => {
+                    self.set_error(format!("json の形式が不正です: {}", err));
                     return;
                 }
             };
-            parsed.push((id, profile));
-        }
-        parsed.sort_by_key(|(id, _)| *id);
 
-        self.students = parsed
+            let mut converted = BTreeMap::new();
+            for (id_text, profile) in raw {
+                let id = match id_text.parse::<u16>() {
+                    Ok(id) if id > 0 => id,
+                    _ => {
+                        self.set_error(format!(
+                            "students.json のキー '{}' は 1..65535 の数値文字列にしてください。",
+                            id_text
+                        ));
+                        return;
+                    }
+                };
+                converted.insert(id, profile);
+            }
+            converted
+        };
+
+        self.students = parsed_students
             .into_iter()
             .map(|(id, profile)| StudentForm {
                 id: Some(id),
@@ -1267,6 +1295,10 @@ impl SekigaeApp {
         let empty_seats = self.empty_seats.clone();
         for student in &mut self.students {
             Self::normalize_student_targets(student, seat_count, &empty_seats);
+        }
+
+        for preset in loaded_presets {
+            self.upsert_target_preset(preset);
         }
 
         self.selected_student = if self.students.is_empty() {
@@ -1389,17 +1421,32 @@ impl SekigaeApp {
         })
     }
 
+    fn build_students_json_document(&self) -> StudentsJsonDocument {
+        let students = self.build_students_map();
+        let target_presets = self
+            .target_presets
+            .iter()
+            .cloned()
+            .map(|mut preset| {
+                preset.targets = self.sanitize_preset_targets(&preset.targets);
+                preset
+            })
+            .collect::<Vec<_>>();
+
+        StudentsJsonDocument { students, target_presets }
+    }
+
     fn export_students_json(&mut self) {
         self.clear_messages();
 
-        let students_map = self.build_students_map();
-        if students_map.is_empty() {
+        let students_document = self.build_students_json_document();
+        if students_document.students.is_empty() {
             self.set_error("書き出す生徒がいません。生徒を追加してください。");
             return;
         }
 
         let path = Self::path_from_input(&self.students_json_path, "./students.json");
-        match Self::write_json_value(&path, &students_map, "students.json") {
+        match Self::write_json_value(&path, &students_document, "students.json") {
             Ok(()) => self.set_info(format!("students.json を出力しました: {}", path.display())),
             Err(err) => self.set_error(err),
         }
@@ -1969,6 +2016,7 @@ impl SekigaeApp {
 
                 ui.separator();
                 egui::ScrollArea::vertical()
+                    .id_salt("students-list-scroll")
                     .max_height(420.0)
                     .show(ui, |ui| {
                         for (i, student) in self.students.iter().enumerate() {
@@ -2163,6 +2211,7 @@ impl SekigaeApp {
                 ui.add_space(4.0);
 
                 egui::ScrollArea::vertical()
+                    .id_salt("edit-student-scroll")
                     .max_height(180.0)
                     .show(ui, |ui| {
                         for (i, student) in self.students.iter().enumerate() {
@@ -2247,6 +2296,7 @@ impl SekigaeApp {
 
                     ui.add_space(4.0);
                     egui::ScrollArea::vertical()
+                        .id_salt("targets-close-to-options-scroll")
                         .max_height(150.0)
                         .show(ui, |ui| {
                             for (other_idx, other_student) in self.students.iter().enumerate() {
@@ -2309,6 +2359,7 @@ impl SekigaeApp {
 
                     ui.add_space(4.0);
                     egui::ScrollArea::vertical()
+                        .id_salt("targets-avoid-options-scroll")
                         .max_height(150.0)
                         .show(ui, |ui| {
                             for (other_idx, other_student) in self.students.iter().enumerate() {
@@ -2905,6 +2956,7 @@ impl eframe::App for SekigaeApp {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical()
+                .id_salt("main-page-scroll")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.add_space(6.0);
