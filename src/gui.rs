@@ -80,10 +80,16 @@ enum UiStage {
     SolveExport,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum TargetEditMode {
     Soft,
     Forced,
+}
+
+impl Default for TargetEditMode {
+    fn default() -> Self {
+        Self::Soft
+    }
 }
 
 impl TargetEditMode {
@@ -95,7 +101,7 @@ impl TargetEditMode {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ResultDisplayMode {
     All,
     Random,
@@ -161,6 +167,7 @@ pub struct SekigaeApp {
     config: AnnealingConfig,
     target_edit_mode: TargetEditMode,
     result_display_mode: ResultDisplayMode,
+    result_fullscreen: bool,
     result: Option<SeatingResult>,
     last_error: Option<String>,
     last_info: Option<String>,
@@ -189,6 +196,8 @@ struct StudentForm {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct TargetPreset {
     name: String,
+    #[serde(default)]
+    mode: TargetEditMode,
     targets: Vec<usize>,
 }
 
@@ -285,6 +294,7 @@ impl SekigaeApp {
             },
             target_edit_mode: TargetEditMode::Soft,
             result_display_mode: ResultDisplayMode::Random,
+            result_fullscreen: false,
             result: None,
             last_error: None,
             last_info: None,
@@ -539,6 +549,11 @@ impl SekigaeApp {
                 )
                 .changed();
 
+            ui.separator();
+            // 全画面表示は表示モードとは独立したトグルとする
+            if ui.checkbox(&mut self.result_fullscreen, "全画面表示").changed() {
+                changed = true;
+            }
             if changed {
                 self.animation_displayed_indices.clear();
                 self.animation_last_update = Instant::now();
@@ -976,7 +991,7 @@ impl SekigaeApp {
         if let Some(existing_idx) = self
             .target_presets
             .iter()
-            .position(|existing| existing.name == preset.name)
+            .position(|existing| existing.name == preset.name && existing.mode == preset.mode)
         {
             self.target_presets[existing_idx] = preset;
         } else {
@@ -1131,21 +1146,28 @@ impl SekigaeApp {
             return;
         }
 
-        let targets = self.sanitize_preset_targets(&self.students[student_idx].targets);
+        let mode = self.target_edit_mode;
+        let targets = match mode {
+            TargetEditMode::Soft => self.sanitize_preset_targets(&self.students[student_idx].targets),
+            TargetEditMode::Forced => {
+                self.sanitize_preset_targets(&self.students[student_idx].forced_targets)
+            }
+        };
 
         if let Some(existing_idx) = self
             .target_presets
             .iter()
-            .position(|preset| preset.name == name)
+            .position(|preset| preset.name == name && preset.mode == mode)
         {
             self.target_presets[existing_idx].targets = targets;
-            self.set_info(format!("プリセット '{}' を更新しました。", name));
+            self.set_info(format!("{}プリセット '{}' を更新しました。", mode.title(), name));
         } else {
             self.target_presets.push(TargetPreset {
                 name: name.clone(),
+                mode,
                 targets,
             });
-            self.set_info(format!("プリセット '{}' を追加しました。", name));
+            self.set_info(format!("{}プリセット '{}' を追加しました。", mode.title(), name));
         }
     }
 
@@ -1154,16 +1176,32 @@ impl SekigaeApp {
             return;
         }
 
-        let preset_name = self.target_presets[preset_idx].name.clone();
+        let preset = self.target_presets[preset_idx].clone();
+        let preset_name = preset.name.clone();
+        let mode = self.target_edit_mode;
         let targets = Self::sanitize_targets_for_grid(
             self.seat_count(),
             &self.empty_seats,
-            &self.target_presets[preset_idx].targets,
+            &preset.targets,
         );
 
-        self.students[student_idx].targets = targets;
+        let seat_count = self.seat_count();
+        let empty_seats = self.empty_seats.clone();
+        match mode {
+            TargetEditMode::Soft => {
+                self.students[student_idx].targets = targets;
+            }
+            TargetEditMode::Forced => {
+                self.students[student_idx].forced_targets = targets;
+            }
+        }
+        Self::normalize_student_targets(&mut self.students[student_idx], seat_count, &empty_seats);
         self.clear_result_if_needed();
-        self.set_info(format!("プリセット '{}' を適用しました。", preset_name));
+        self.set_info(format!("{}でプリセット '{}' を適用しました。", mode.title(), preset_name));
+    }
+
+    fn preset_summary(&self, preset: &TargetPreset) -> String {
+        format!("[{}] {}", preset.mode.title(), self.targets_to_summary(&preset.targets))
     }
 
     fn path_from_input(input: &str, default_value: &str) -> PathBuf {
@@ -2395,7 +2433,10 @@ impl SekigaeApp {
                         ui.label("プリセット名");
                         ui.text_edit_singleline(&mut self.new_preset_name);
                     });
-                    if ui.button("現在の希望席設定を登録").clicked() {
+                    if ui
+                        .button(format!("現在の{}を登録", self.target_edit_mode.title()))
+                        .clicked()
+                    {
                         register_preset = true;
                     }
 
@@ -2408,7 +2449,7 @@ impl SekigaeApp {
                                 ui.label(format!(
                                     "{}: {}",
                                     preset.name,
-                                    self.targets_to_summary(&preset.targets)
+                                    self.preset_summary(preset)
                                 ));
 
                                 if ui.button("適用").clicked() {
@@ -2666,11 +2707,15 @@ impl SekigaeApp {
         }
     }
 
-    fn render_result_grid(&mut self, ui: &mut egui::Ui, result: &SeatingResult) {
-        let seat_cell_size = self.result_cell_size();
+    fn render_result_grid(&mut self, ui: &mut egui::Ui, result: &SeatingResult, full_screen: bool) {
+        let seat_cell_size = if full_screen {
+            [168.0, 78.0]
+        } else {
+            self.result_cell_size()
+        };
         let built_students = self.build_students();
 
-        ui.label(format!("sekigae3 cost: {:.3}", result.cost));
+        ui.label(RichText::new(format!("sekigae3 cost: {:.3}", result.cost)).strong());
 
         if self.result_display_mode == ResultDisplayMode::Random {
             // 1秒ごとにランダムに生徒を追加表示
@@ -2696,11 +2741,54 @@ impl SekigaeApp {
         }
 
         ui.add_space(6.0);
-        egui::ScrollArea::both()
-            .id_salt("result-seat-map-scroll")
-            .auto_shrink([false, false])
-            .max_height(500.0)
-            .show(ui, |ui| {
+        let scroll = egui::ScrollArea::both().id_salt("result-seat-map-scroll").auto_shrink([false, false]);
+        if full_screen {
+            // 全画面時は中央寄せせず、左上基準で大きく表示する
+            scroll.show(ui, |ui| {
+                let avail_w = ui.available_width().max(900.0);
+                let avail_h = ui.available_height().max(400.0);
+                let spacing = 8.0;
+                let mut cw = (avail_w - (self.cols as f32 - 1.0) * spacing) / self.cols as f32;
+                cw = cw.clamp(90.0, 240.0);
+                let ch = (avail_h / self.rows.max(1) as f32).clamp(30.0, 160.0);
+                let cell = [cw, ch.min(cw * 0.32)];
+
+                egui::Grid::new("result-grid")
+                    .num_columns(self.cols)
+                    .spacing([8.0, 8.0])
+                    .show(ui, |ui| {
+                        for r in 0..self.rows {
+                            for c in 0..self.cols {
+                                let idx = r * self.cols + c;
+
+                                if self.empty_seats[idx] {
+                                    ui.add_sized(
+                                        cell,
+                                        Button::new(RichText::new("空席").color(Color32::WHITE).size(18.0))
+                                            .fill(Color32::from_rgb(120, 120, 120)),
+                                    );
+                                    continue;
+                                }
+
+                                let text = match result.layout.get(idx).and_then(|x| *x) {
+                                    Some(student_idx) if student_idx < built_students.len() => {
+                                        let student = &built_students[student_idx];
+                                        format!("{}\n({})", student.name, student.number)
+                                    }
+                                    _ => "-".to_string(),
+                                };
+
+                                ui.add_sized(
+                                    cell,
+                                    Button::new(RichText::new(text).size(18.0)),
+                                );
+                            }
+                            ui.end_row();
+                        }
+                    });
+            });
+        } else {
+            scroll.max_height(500.0).show(ui, |ui| {
                 ui.set_min_width(500.0);
                 egui::Grid::new("result-grid")
                     .num_columns(self.cols)
@@ -2722,9 +2810,13 @@ impl SekigaeApp {
                                 let text = match result.layout.get(idx).and_then(|x| *x) {
                                     Some(student_idx) if student_idx < built_students.len() => {
                                         // 表示モードで判定
-                                        let should_display = match self.result_display_mode {
-                                            ResultDisplayMode::All => true,
-                                            ResultDisplayMode::Random => self.animation_displayed_indices.contains(&student_idx),
+                                        let should_display = if full_screen {
+                                            true
+                                        } else {
+                                            match self.result_display_mode {
+                                                ResultDisplayMode::All => true,
+                                                ResultDisplayMode::Random => self.animation_displayed_indices.contains(&student_idx),
+                                            }
                                         };
 
                                         if should_display {
@@ -2746,6 +2838,7 @@ impl SekigaeApp {
                         }
                     });
             });
+        }
     }
 
     fn render_export_panel(&mut self, ui: &mut egui::Ui) {
@@ -2881,12 +2974,17 @@ impl SekigaeApp {
 
     fn render_solve_export_stage(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
         let mut run_solver = false;
+        let full_screen = self.result_fullscreen;
 
-        ui.columns(2, |columns| {
-            columns[0].group(|ui| {
-                ui.label(RichText::new("席替え実行と結果").strong());
+        if full_screen {
+            ui.group(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("席替え実行と結果").strong());
+                    ui.separator();
+                    self.render_result_display_mode_selector(ui);
+                });
+
                 ui.add_space(6.0);
-
                 if ui
                     .add_enabled(
                         !self.is_solving,
@@ -2903,21 +3001,51 @@ impl SekigaeApp {
                 }
 
                 ui.add_space(8.0);
-                self.render_result_display_mode_selector(ui);
-                ui.add_space(4.0);
-
                 if self.result.is_some() {
                     let result = self.result.as_ref().unwrap().clone();
-                    self.render_result_grid(ui, &result);
+                    self.render_result_grid(ui, &result, true);
                 } else {
                     ui.label("まだ結果がありません。左上のボタンで席替えを実行してください。");
                 }
             });
+        } else {
+            ui.columns(2, |columns| {
+                columns[0].group(|ui| {
+                    ui.label(RichText::new("席替え実行と結果").strong());
+                    ui.add_space(6.0);
 
-            columns[1].group(|ui| {
-                self.render_export_panel(ui);
+                    if ui
+                        .add_enabled(
+                            !self.is_solving,
+                            Button::new("席替えを実行").min_size(egui::vec2(240.0, 40.0)),
+                        )
+                        .clicked()
+                    {
+                        run_solver = true;
+                    }
+
+                    if self.is_solving {
+                        ui.add_space(4.0);
+                        ui.colored_label(Color32::from_rgb(200, 120, 20), "席替え中...");
+                    }
+
+                    ui.add_space(8.0);
+                    self.render_result_display_mode_selector(ui);
+                    ui.add_space(4.0);
+
+                    if self.result.is_some() {
+                        let result = self.result.as_ref().unwrap().clone();
+                        self.render_result_grid(ui, &result, false);
+                    } else {
+                        ui.label("まだ結果がありません。左上のボタンで席替えを実行してください。");
+                    }
+                });
+
+                columns[1].group(|ui| {
+                    self.render_export_panel(ui);
+                });
             });
-        });
+        }
 
         if run_solver {
             self.run_solver(ctx);
@@ -2948,6 +3076,9 @@ impl eframe::App for SekigaeApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.apply_text_style(ctx);
         self.poll_solver_result(ctx);
+
+        let should_fullscreen = self.current_stage == UiStage::SolveExport && self.result_fullscreen;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(should_fullscreen));
 
         // 結果表示中はアニメーションが進行中のため、毎フレーム再描画
         if self.result.is_some() {
