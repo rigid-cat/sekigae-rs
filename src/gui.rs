@@ -18,59 +18,7 @@ use crate::model::{AnnealingConfig, SeatingResult, Student, Target};
 use crate::solver::find_best_seating_with_blocked;
 
 const APP_TITLE: &str = "sekigae-rs";
-const DEFAULT_SEATS_TYP_TEMPLATE: &str = r##"#set page(
-    paper: "a4",
-    flipped: true,
-    margin: (top: 0mm, bottom: 5mm, x: 10mm),
-)
-
-#set text(size: 9pt, weight: 500)
-
-#let seat(id, last_name, first_name, last_kana, first_kana) = {
-    grid(columns: (5mm, auto), align: center,
-        align(top)[#id],
-        table(
-            columns: 35mm,
-            align: center + horizon,
-            stroke: (x, y) => {
-                (left: 2pt)
-                (right: 2pt)
-                if y == 0 { (top: 2pt) }
-                if y == 2 { (bottom: 2pt) }
-                if y == 1 or y == 2 { (top: 1pt + gray) }
-            },
-            [#last_kana],
-            text(size: 16pt)[#last_name],
-            [#first_name (#first_kana)],
-        ),
-    )
-}
-
-#let data = json("seats.json")
-
-#move(dy: 17mm)[
-    #text(size: 14pt)[#data.date]
-]
-
-#align(center + horizon)[
-    #box(width: 80mm, height: 10mm, stroke: 2pt)[#text(size: 14pt)[教卓]]
-    #move(dx: -2.5mm)[
-        #grid(
-            columns: data.layout.cols,
-            align: center,
-            inset: (x: 3mm, y: 2mm),
-            ..data.seats
-                .map(row => row.map(id => if id == none {
-                    ""
-                } else {
-                    let s = data.students.at(str(id))
-                    seat(id, s.last_name, s.first_name, s.last_kana, s.first_kana)
-                }))
-                .flatten(),
-        )
-    ]
-]
-"##;
+const DEFAULT_SEATS_TYP_TEMPLATE: &str = include_str!("../seats.typ");
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum UiStage {
