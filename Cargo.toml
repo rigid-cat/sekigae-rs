@@ -17,3 +17,8 @@ typst-pdf = "0.14.2"
 typst-render = "0.14.2"
 typst-svg = "0.14.2"
 reqwest = { version = "0.13.3", features = ["blocking", "json"] }
+
+[profile.release]
+lto = "fat"
+opt-level = 3
+strip = true
