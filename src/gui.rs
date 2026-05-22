@@ -1800,24 +1800,39 @@ impl SekigaeApp {
         ppi: u16,
     ) -> Result<(), String> {
         Self::ensure_parent_dir(output_path)?;
-        let page = Self::single_page_for_image(document, output_path, "PNG")?;
 
-        let pixmap = typst_render::render(page, f32::from(ppi) / 72.0);
-        let png = pixmap.encode_png().map_err(|err| {
-            format!(
-                "PNG エンコードに失敗しました ({}): {}",
-                output_path.display(),
-                err
-            )
-        })?;
+        let scale = f32::from(ppi) / 72.0;
 
-        fs::write(output_path, png).map_err(|err| {
-            format!(
-                "PNG の書き込みに失敗しました: {} ({})",
-                output_path.display(),
-                err
-            )
-        })
+        for (i, page) in document.pages.iter().enumerate() {
+            let pixmap = typst_render::render(page, scale);
+
+            let png = pixmap.encode_png().map_err(|err| {
+                format!(
+                    "PNG エンコードに失敗しました (page {}): {}",
+                    i + 1,
+                    err
+                )
+            })?;
+
+            let path = if document.pages.len() == 1 {
+                output_path.to_path_buf()
+            } else {
+                output_path.with_file_name(format!(
+                    "{}-{}.png",
+                    output_path
+                        .file_stem()
+                        .unwrap()
+                        .to_string_lossy(),
+                    i + 1
+                ))
+            };
+
+            fs::write(path, png).map_err(|err| {
+                format!("PNG 書き込みに失敗しました: {}", err)
+            })?;
+        }
+
+        Ok(())
     }
 
     fn export_svg_from_document(
@@ -1825,16 +1840,29 @@ impl SekigaeApp {
         output_path: &Path,
     ) -> Result<(), String> {
         Self::ensure_parent_dir(output_path)?;
-        let page = Self::single_page_for_image(document, output_path, "SVG")?;
 
-        let svg = typst_svg::svg(page);
-        fs::write(output_path, svg.as_bytes()).map_err(|err| {
-            format!(
-                "SVG の書き込みに失敗しました: {} ({})",
-                output_path.display(),
-                err
-            )
-        })
+        for (i, page) in document.pages.iter().enumerate() {
+            let svg = typst_svg::svg(page);
+
+            let path = if document.pages.len() == 1 {
+                output_path.to_path_buf()
+            } else {
+                output_path.with_file_name(format!(
+                    "{}-{}.svg",
+                    output_path
+                        .file_stem()
+                        .unwrap()
+                        .to_string_lossy(),
+                    i + 1
+                ))
+            };
+
+            fs::write(path, svg.as_bytes()).map_err(|err| {
+                format!("SVG 書き込みに失敗しました: {}", err)
+            })?;
+        }
+        
+        Ok(())
     }
 
     fn generate_typst_outputs(&mut self) {

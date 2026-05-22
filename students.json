@@ -1,107 +1,210 @@
 {
-  "1": {
-    "last_name": "田中",
-    "first_name": "太郎",
-    "last_kana": "タナカ",
-    "first_kana": "タロウ",
-    "targets": []
+  "students": {
+    "1": {
+      "last_name": "田中",
+      "first_name": "太郎",
+      "last_kana": "タナカ",
+      "first_kana": "タロウ",
+      "tags": [],
+      "targets": [],
+      "forced_targets": [],
+      "close_to": [],
+      "forced_close_to": [],
+      "avoid": [],
+      "forced_avoid": []
+    },
+    "2": {
+      "last_name": "佐藤",
+      "first_name": "花子",
+      "last_kana": "サトウ",
+      "first_kana": "ハナコ",
+      "tags": [],
+      "targets": [],
+      "forced_targets": [],
+      "close_to": [],
+      "forced_close_to": [],
+      "avoid": [],
+      "forced_avoid": []
+    },
+    "3": {
+      "last_name": "鈴木",
+      "first_name": "一郎",
+      "last_kana": "スズキ",
+      "first_kana": "イチロウ",
+      "tags": [],
+      "targets": [],
+      "forced_targets": [],
+      "close_to": [],
+      "forced_close_to": [],
+      "avoid": [],
+      "forced_avoid": []
+    },
+    "4": {
+      "last_name": "高橋",
+      "first_name": "美咲",
+      "last_kana": "タカハシ",
+      "first_kana": "ミサキ",
+      "tags": [],
+      "targets": [],
+      "forced_targets": [],
+      "close_to": [],
+      "forced_close_to": [],
+      "avoid": [],
+      "forced_avoid": []
+    },
+    "5": {
+      "last_name": "伊藤",
+      "first_name": "健太",
+      "last_kana": "イトウ",
+      "first_kana": "ケンタ",
+      "tags": [],
+      "targets": [],
+      "forced_targets": [],
+      "close_to": [],
+      "forced_close_to": [],
+      "avoid": [],
+      "forced_avoid": []
+    },
+    "6": {
+      "last_name": "渡辺",
+      "first_name": "愛",
+      "last_kana": "ワタナベ",
+      "first_kana": "アイ",
+      "tags": [],
+      "targets": [],
+      "forced_targets": [],
+      "close_to": [],
+      "forced_close_to": [],
+      "avoid": [],
+      "forced_avoid": []
+    },
+    "7": {
+      "last_name": "山本",
+      "first_name": "翔",
+      "last_kana": "ヤマモト",
+      "first_kana": "ショウ",
+      "tags": [],
+      "targets": [],
+      "forced_targets": [],
+      "close_to": [],
+      "forced_close_to": [],
+      "avoid": [],
+      "forced_avoid": []
+    },
+    "8": {
+      "last_name": "中村",
+      "first_name": "結衣",
+      "last_kana": "ナカムラ",
+      "first_kana": "ユイ",
+      "tags": [],
+      "targets": [],
+      "forced_targets": [],
+      "close_to": [],
+      "forced_close_to": [],
+      "avoid": [],
+      "forced_avoid": []
+    },
+    "9": {
+      "last_name": "小林",
+      "first_name": "大輔",
+      "last_kana": "コバヤシ",
+      "first_kana": "ダイスケ",
+      "tags": [],
+      "targets": [],
+      "forced_targets": [],
+      "close_to": [],
+      "forced_close_to": [],
+      "avoid": [],
+      "forced_avoid": []
+    },
+    "10": {
+      "last_name": "加藤",
+      "first_name": "さくら",
+      "last_kana": "カトウ",
+      "first_kana": "サクラ",
+      "tags": [],
+      "targets": [],
+      "forced_targets": [],
+      "close_to": [],
+      "forced_close_to": [],
+      "avoid": [],
+      "forced_avoid": []
+    },
+    "11": {
+      "last_name": "吉田",
+      "first_name": "悠真",
+      "last_kana": "ヨシダ",
+      "first_kana": "ユウマ",
+      "tags": [],
+      "targets": [],
+      "forced_targets": [],
+      "close_to": [],
+      "forced_close_to": [],
+      "avoid": [],
+      "forced_avoid": []
+    },
+    "12": {
+      "last_name": "山田",
+      "first_name": "葵",
+      "last_kana": "ヤマダ",
+      "first_kana": "アオイ",
+      "tags": [],
+      "targets": [],
+      "forced_targets": [],
+      "close_to": [],
+      "forced_close_to": [],
+      "avoid": [],
+      "forced_avoid": []
+    },
+    "13": {
+      "last_name": "佐々木",
+      "first_name": "陸",
+      "last_kana": "ササキ",
+      "first_kana": "リク",
+      "tags": [],
+      "targets": [],
+      "forced_targets": [],
+      "close_to": [],
+      "forced_close_to": [],
+      "avoid": [],
+      "forced_avoid": []
+    },
+    "14": {
+      "last_name": "山口",
+      "first_name": "陽菜",
+      "last_kana": "ヤマグチ",
+      "first_kana": "ヒナ",
+      "tags": [],
+      "targets": [],
+      "forced_targets": [],
+      "close_to": [],
+      "forced_close_to": [],
+      "avoid": [],
+      "forced_avoid": []
+    },
+    "15": {
+      "last_name": "松尾",
+      "first_name": "賢二",
+      "last_kana": "マツオ",
+      "first_kana": "ケンジ",
+      "tags": [],
+      "targets": [],
+      "forced_targets": [],
+      "close_to": [],
+      "forced_close_to": [],
+      "avoid": [],
+      "forced_avoid": []
+    }
   },
-  "2": {
-    "last_name": "佐藤",
-    "first_name": "花子",
-    "last_kana": "サトウ",
-    "first_kana": "ハナコ",
-    "targets": []
+  "tags": {
+    "president": {
+      "label": "委員長",
+      "symbol": "*"
+    },
+    "tuter": {
+      "label": "チューター",
+      "symbol": "##"
+    }
   },
-  "3": {
-    "last_name": "鈴木",
-    "first_name": "一郎",
-    "last_kana": "スズキ",
-    "first_kana": "イチロウ",
-    "targets": []
-  },
-  "4": {
-    "last_name": "高橋",
-    "first_name": "美咲",
-    "last_kana": "タカハシ",
-    "first_kana": "ミサキ",
-    "targets": []
-  },
-  "5": {
-    "last_name": "伊藤",
-    "first_name": "健太",
-    "last_kana": "イトウ",
-    "first_kana": "ケンタ",
-    "targets": []
-  },
-  "6": {
-    "last_name": "渡辺",
-    "first_name": "愛",
-    "last_kana": "ワタナベ",
-    "first_kana": "アイ",
-    "targets": []
-  },
-  "7": {
-    "last_name": "山本",
-    "first_name": "翔",
-    "last_kana": "ヤマモト",
-    "first_kana": "ショウ",
-    "targets": []
-  },
-  "8": {
-    "last_name": "中村",
-    "first_name": "結衣",
-    "last_kana": "ナカムラ",
-    "first_kana": "ユイ",
-    "targets": []
-  },
-  "9": {
-    "last_name": "小林",
-    "first_name": "大輔",
-    "last_kana": "コバヤシ",
-    "first_kana": "ダイスケ",
-    "targets": []
-  },
-  "10": {
-    "last_name": "加藤",
-    "first_name": "さくら",
-    "last_kana": "カトウ",
-    "first_kana": "サクラ",
-    "targets": []
-  },
-  "11": {
-    "last_name": "吉田",
-    "first_name": "悠真",
-    "last_kana": "ヨシダ",
-    "first_kana": "ユウマ",
-    "targets": []
-  },
-  "12": {
-    "last_name": "山田",
-    "first_name": "葵",
-    "last_kana": "ヤマダ",
-    "first_kana": "アオイ",
-    "targets": []
-  },
-  "13": {
-    "last_name": "佐々木",
-    "first_name": "陸",
-    "last_kana": "ササキ",
-    "first_kana": "リク",
-    "targets": []
-  },
-  "14": {
-    "last_name": "山口",
-    "first_name": "陽菜",
-    "last_kana": "ヤマグチ",
-    "first_kana": "ヒナ",
-    "targets": []
-  },
-  "15": {
-    "last_name": "松尾",
-    "first_name": "賢二",
-    "last_kana": "マツオ",
-    "first_kana": "ケンジ",
-    "targets": []
-  }
+  "target_presets": []
 }
