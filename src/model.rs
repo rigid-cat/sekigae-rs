@@ -4,6 +4,7 @@ pub struct Student {
     pub number: u16,
     pub targets: Vec<Target>,
     pub forced_targets: Vec<Target>,
+    pub tags: Vec<String>,
     pub close_to: Vec<u16>,
     #[allow(dead_code)]
     pub forced_close_to: Vec<u16>,
@@ -19,6 +20,7 @@ impl Student {
         number: u16,
         targets: Vec<Target>,
         forced_targets: Vec<Target>,
+        tags: Vec<String>,
         close_to: Vec<u16>,
         forced_close_to: Vec<u16>,
         avoid: Vec<u16>,
@@ -29,6 +31,7 @@ impl Student {
             number,
             targets,
             forced_targets,
+            tags,
             close_to,
             forced_close_to,
             avoid,

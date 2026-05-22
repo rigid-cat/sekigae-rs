@@ -12,6 +12,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use typst::layout::PagedDocument;
 use typst_as_lib::TypstEngine;
+use typst::foundations::{Dict, IntoValue};
 
 use crate::fetch::{fetch_student_preferences, parse_targets, SeatRange};
 use crate::model::{AnnealingConfig, SeatingResult, Student, Target};
@@ -100,6 +101,7 @@ pub struct SekigaeApp {
     selected_student: Option<usize>,
     target_presets: Vec<TargetPreset>,
     new_preset_name: String,
+    tag_forms: Vec<TagForm>,
     use_custom_date: bool,
     custom_date: String,
     students_json_path: String,
@@ -124,6 +126,9 @@ pub struct SekigaeApp {
     // アニメーション表示用
     animation_displayed_indices: Vec<usize>,
     animation_last_update: std::time::Instant,
+
+    student_view: bool,
+    teacher_view: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -133,12 +138,20 @@ struct StudentForm {
     first_name: String,
     last_kana: String,
     first_kana: String,
+    tags: Vec<String>,
     targets: Vec<usize>,
     forced_targets: Vec<usize>,
     close_to: Vec<u16>,
     forced_close_to: Vec<u16>,
     avoid: Vec<u16>,
     forced_avoid: Vec<u16>,
+}
+
+#[derive(Clone, Debug)]
+struct TagForm {
+    key: String,
+    label: String,
+    symbol: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -153,7 +166,15 @@ struct TargetPreset {
 struct StudentsJsonDocument {
     students: BTreeMap<u16, StudentProfile>,
     #[serde(default)]
+    tags: BTreeMap<String, TagDefinition>,
+    #[serde(default)]
     target_presets: Vec<TargetPreset>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct TagDefinition {
+    label: String,
+    symbol: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -162,6 +183,8 @@ struct StudentProfile {
     first_name: String,
     last_kana: String,
     first_kana: String,
+    #[serde(default)]
+    tags: Vec<String>,
     targets: Vec<usize>,
     #[serde(default)]
     forced_targets: Vec<usize>,
@@ -193,6 +216,7 @@ struct SeatsJsonDocument {
     layout: SeatsLayout,
     seats: Vec<Vec<Option<u16>>>,
     students: BTreeMap<u16, StudentProfile>,
+    tags: BTreeMap<String, TagDefinition>,
 }
 
 impl SekigaeApp {
@@ -213,6 +237,7 @@ impl SekigaeApp {
                 first_name: String::new(),
                 last_kana: String::new(),
                 first_kana: String::new(),
+                tags: Vec::new(),
                 targets: Vec::new(),
                 forced_targets: Vec::new(),
                 close_to: Vec::new(),
@@ -223,6 +248,7 @@ impl SekigaeApp {
             selected_student: Some(0),
             target_presets: Vec::new(),
             new_preset_name: String::new(),
+            tag_forms: Vec::new(),
             use_custom_date: false,
             custom_date: Local::now().format("%Y/%m/%d").to_string(),
             students_json_path: "./students.json".to_string(),
@@ -250,6 +276,9 @@ impl SekigaeApp {
             solver_rx: None,
             animation_displayed_indices: Vec::new(),
             animation_last_update: Instant::now(),
+
+            student_view: true,
+            teacher_view: false,
         }
     }
 
@@ -303,13 +332,13 @@ impl SekigaeApp {
             return;
         }
 
-        let Some(rx) = &self.solver_rx else {
+        let Some(rx_result) = self.solver_rx.as_ref().map(|rx| rx.try_recv()) else {
             self.is_solving = false;
             self.set_window_busy_state(ctx, false);
             return;
         };
 
-        match rx.try_recv() {
+        match rx_result {
             Ok(Ok(result)) => {
                 self.result = Some(result);
                 self.animation_displayed_indices.clear();
@@ -354,6 +383,7 @@ impl SekigaeApp {
         self.selected_student = Some(0);
         self.target_presets.clear();
         self.new_preset_name.clear();
+        self.tag_forms.clear();
 
         self.use_custom_date = false;
         self.custom_date = Local::now().format("%Y/%m/%d").to_string();
@@ -367,6 +397,9 @@ impl SekigaeApp {
         self.export_png = false;
         self.export_svg = false;
         self.png_ppi = 144;
+
+        self.student_view = true;
+        self.teacher_view = false;
 
         self.config = AnnealingConfig {
             seed: 0,
@@ -417,6 +450,110 @@ impl SekigaeApp {
         (plus, minus)
     }
 
+    fn default_tag_form() -> TagForm {
+        TagForm {
+            key: String::new(),
+            label: String::new(),
+            symbol: String::new(),
+        }
+    }
+
+    fn build_tags_map(&self) -> BTreeMap<String, TagDefinition> {
+        let mut tags = BTreeMap::new();
+
+        for form in &self.tag_forms {
+            let key = form.key.trim();
+            if key.is_empty() || tags.contains_key(key) {
+                continue;
+            }
+
+            tags.insert(
+                key.to_string(),
+                TagDefinition {
+                    label: form.label.trim().to_string(),
+                    symbol: form.symbol.trim().to_string(),
+                },
+            );
+        }
+
+        tags
+    }
+
+    fn build_tag_key_set(&self) -> HashSet<String> {
+        self.build_tags_map().into_keys().collect()
+    }
+
+    fn sanitize_student_tags(tags: &[String], valid_tags: &HashSet<String>) -> Vec<String> {
+        let mut sanitized = Vec::new();
+        let mut seen = HashSet::new();
+
+        for tag in tags {
+            let tag = tag.trim();
+            if tag.is_empty() || !valid_tags.contains(tag) || !seen.insert(tag.to_string()) {
+                continue;
+            }
+            sanitized.push(tag.to_string());
+        }
+
+        sanitized
+    }
+
+    fn student_tag_symbols_with_defs(
+        tags: &[String],
+        tag_defs: &BTreeMap<String, TagDefinition>,
+    ) -> String {
+        tags.iter()
+            .filter_map(|key| tag_defs.get(key).map(|definition| definition.symbol.trim()))
+            .filter(|symbol| !symbol.is_empty())
+            .map(|symbol| symbol.to_string())
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn student_tag_labels_with_defs(
+        tags: &[String],
+        tag_defs: &BTreeMap<String, TagDefinition>,
+    ) -> String {
+        tags.iter()
+            .filter_map(|key| tag_defs.get(key).map(|definition| definition.label.trim()))
+            .filter(|label| !label.is_empty())
+            .map(|label| label.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    fn student_tag_symbols(&self, tags: &[String]) -> String {
+        let tag_defs = self.build_tags_map();
+        Self::student_tag_symbols_with_defs(tags, &tag_defs)
+    }
+
+    fn next_unused_tag_key(used: &HashSet<String>) -> String {
+        for index in 1..=usize::MAX {
+            let candidate = format!("tag{}", index);
+            if !used.contains(&candidate) {
+                return candidate;
+            }
+        }
+
+        "tag".to_string()
+    }
+
+    fn remove_tag_from_students(&mut self, tag_key: &str) {
+        for student in &mut self.students {
+            student.tags.retain(|tag| tag != tag_key);
+        }
+    }
+
+    fn assign_tag_to_student(student: &mut StudentForm, tag_key: &str, selected: bool) {
+        if selected {
+            if !student.tags.iter().any(|existing| existing == tag_key) {
+                student.tags.push(tag_key.to_string());
+            }
+        } else {
+            student.tags.retain(|existing| existing != tag_key);
+        }
+    }
+
     fn default_student_form() -> StudentForm {
         StudentForm {
             id: None,
@@ -424,6 +561,7 @@ impl SekigaeApp {
             first_name: String::new(),
             last_kana: String::new(),
             first_kana: String::new(),
+            tags: Vec::new(),
             targets: Vec::new(),
             forced_targets: Vec::new(),
             close_to: Vec::new(),
@@ -906,7 +1044,11 @@ impl SekigaeApp {
         }
     }
 
-    fn profile_from_form(form: &StudentForm, idx: usize) -> StudentProfile {
+    fn profile_from_form(
+        form: &StudentForm,
+        idx: usize,
+        valid_tags: &HashSet<String>,
+    ) -> StudentProfile {
         let mut last_name = form.last_name.trim().to_string();
         let first_name = form.first_name.trim().to_string();
 
@@ -919,6 +1061,7 @@ impl SekigaeApp {
             first_name,
             last_kana: form.last_kana.trim().to_string(),
             first_kana: form.first_kana.trim().to_string(),
+            tags: Self::sanitize_student_tags(&form.tags, valid_tags),
             targets: form.targets.clone(),
             forced_targets: form.forced_targets.clone(),
             close_to: form.close_to.clone(),
@@ -950,6 +1093,7 @@ impl SekigaeApp {
     fn build_students(&self) -> Vec<Student> {
         let assigned_ids = self.assign_student_ids();
         let valid_ids = assigned_ids.iter().copied().collect::<HashSet<_>>();
+        let valid_tags = self.build_tag_key_set();
 
         self.students
             .iter()
@@ -964,13 +1108,25 @@ impl SekigaeApp {
                 let forced_close_to = Self::sanitize_relation_ids(&entry.forced_close_to, number, &valid_ids);
                 let avoid = Self::sanitize_relation_ids(&entry.avoid, number, &valid_ids);
                 let forced_avoid = Self::sanitize_relation_ids(&entry.forced_avoid, number, &valid_ids);
-                Student::new(&name, number, targets, forced_targets, close_to, forced_close_to, avoid, forced_avoid)
+                let tags = Self::sanitize_student_tags(&entry.tags, &valid_tags);
+                Student::new(
+                    &name,
+                    number,
+                    targets,
+                    forced_targets,
+                    tags,
+                    close_to,
+                    forced_close_to,
+                    avoid,
+                    forced_avoid,
+                )
             })
             .collect()
     }
 
     fn build_students_map(&self) -> BTreeMap<u16, StudentProfile> {
         let assigned_ids = self.assign_student_ids();
+        let valid_tags = self.build_tag_key_set();
         let mut students = BTreeMap::new();
 
         for (idx, form) in self.students.iter().enumerate() {
@@ -978,7 +1134,7 @@ impl SekigaeApp {
                 continue;
             }
             let id = assigned_ids[idx];
-            students.insert(id, Self::profile_from_form(form, idx));
+            students.insert(id, Self::profile_from_form(form, idx, &valid_tags));
         }
 
         students
@@ -1231,8 +1387,10 @@ impl SekigaeApp {
         };
 
         let mut loaded_presets = Vec::new();
+        let mut loaded_tags = BTreeMap::new();
         let parsed_students: BTreeMap<u16, StudentProfile> = if let Ok(document) = serde_json::from_str::<StudentsJsonDocument>(&text) {
             loaded_presets = document.target_presets;
+            loaded_tags = document.tags;
             document.students
         } else {
             let raw: BTreeMap<String, StudentProfile> = match serde_json::from_str(&text) {
@@ -1268,6 +1426,7 @@ impl SekigaeApp {
                 first_name: profile.first_name,
                 last_kana: profile.last_kana,
                 first_kana: profile.first_kana,
+                tags: profile.tags,
                 targets: profile.targets,
                 forced_targets: profile.forced_targets,
                 close_to: Vec::new(),
@@ -1276,6 +1435,20 @@ impl SekigaeApp {
                 forced_avoid: profile.forced_avoid,
             })
             .collect();
+
+        self.tag_forms = loaded_tags
+            .into_iter()
+            .map(|(key, definition)| TagForm {
+                key,
+                label: definition.label,
+                symbol: definition.symbol,
+            })
+            .collect();
+
+        let valid_tags = self.build_tag_key_set();
+        for student in &mut self.students {
+            student.tags = Self::sanitize_student_tags(&student.tags, &valid_tags);
+        }
 
         let seat_count = self.seat_count();
         let empty_seats = self.empty_seats.clone();
@@ -1409,6 +1582,7 @@ impl SekigaeApp {
 
     fn build_students_json_document(&self) -> StudentsJsonDocument {
         let students = self.build_students_map();
+        let tags = self.build_tags_map();
         let target_presets = self
             .target_presets
             .iter()
@@ -1419,7 +1593,11 @@ impl SekigaeApp {
             })
             .collect::<Vec<_>>();
 
-        StudentsJsonDocument { students, target_presets }
+        StudentsJsonDocument {
+            students,
+            tags,
+            target_presets,
+        }
     }
 
     fn export_students_json(&mut self) {
@@ -1474,6 +1652,7 @@ impl SekigaeApp {
             },
             seats,
             students: self.build_students_map(),
+            tags: self.build_tags_map(),
         })
     }
 
@@ -1543,7 +1722,7 @@ impl SekigaeApp {
         Ok(())
     }
 
-    fn compile_typst_document(typ_path: &Path) -> Result<PagedDocument, String> {
+    fn compile_typst_document(typ_path: &Path, student_view: bool, teacher_view: bool) -> Result<PagedDocument, String> {
         let typ_dir = typ_path.parent().unwrap_or_else(|| Path::new("."));
         let main_name = typ_path
             .file_name()
@@ -1555,7 +1734,16 @@ impl SekigaeApp {
             .with_file_system_resolver(typ_dir.to_path_buf())
             .build();
 
-        let warned = engine.compile::<_, PagedDocument>(main_name);
+        let mut inputs = Dict::new();
+
+        inputs.insert("student_view".into(), student_view.into_value());
+        inputs.insert("teacher_view".into(), teacher_view.into_value());
+
+        let warned = engine.compile_with_input::<_, _, PagedDocument>(
+            main_name,
+            inputs,
+        );
+
         warned
             .output
             .map_err(|err| format!("Typst コンパイルに失敗しました: {}", err))
@@ -1652,6 +1840,11 @@ impl SekigaeApp {
     fn generate_typst_outputs(&mut self) {
         self.clear_messages();
 
+        if !self.student_view && !self.teacher_view {
+            self.set_error("出力内容に少なくとも「生徒側」か「教師側」を選択してください。");
+            return;
+        }
+
         if !self.export_pdf && !self.export_png && !self.export_svg {
             self.set_error("出力形式を1つ以上選択してください。");
             return;
@@ -1673,7 +1866,7 @@ impl SekigaeApp {
             }
         };
 
-        let typst_document = match Self::compile_typst_document(&typ_path) {
+        let typst_document = match Self::compile_typst_document(&typ_path, self.student_view, self.teacher_view) {
             Ok(doc) => doc,
             Err(err) => {
                 self.set_error(err);
@@ -1964,6 +2157,11 @@ impl SekigaeApp {
         let mut add_student = false;
         let mut remove_selected = false;
         let mut student_changed = false;
+        let mut add_tag = false;
+        let mut remove_tag_idx: Option<usize> = None;
+        let mut toggle_tag_keys = Vec::new();
+        let mut clear_tags_for_selected = false;
+        let mut tag_definition_changed = false;
 
         ui.columns(2, |columns| {
             columns[0].group(|ui| {
@@ -2035,6 +2233,15 @@ impl SekigaeApp {
                             "現在の遠ざかり希望: {}",
                             self.avoid_summary(student_idx)
                         ));
+                        let tag_summary = self.student_tag_symbols(&self.students[student_idx].tags);
+                        ui.label(format!(
+                            "現在のタグ: {}",
+                            if tag_summary.is_empty() {
+                                "指定なし".to_string()
+                            } else {
+                                tag_summary
+                            }
+                        ));
                         ui.add_space(8.0);
 
                         ui.horizontal(|ui| {
@@ -2090,6 +2297,88 @@ impl SekigaeApp {
                         if ui.button("この生徒の希望席設定へ移動").clicked() {
                             self.current_stage = UiStage::Targets;
                         }
+
+                        ui.add_space(8.0);
+
+                        if self.tag_forms.is_empty() {
+                            ui.label("タグが存在しません。");
+                        } else {
+                            ui.label("タグの割り当て");
+                            for tag in &self.tag_forms {
+                                let key = tag.key.trim();
+                                if key.is_empty() {
+                                    continue;
+                                }
+
+                                let mut selected = self.students[student_idx]
+                                    .tags
+                                    .iter()
+                                    .any(|existing| existing == key);
+
+                                // 基本はlabel、空ならkey
+                                let label = if tag.label.trim().is_empty() {
+                                    format!("{}", tag.key.trim())
+                                } else {
+                                    format!("{}", tag.label.trim())
+                                };
+
+
+                                if ui.checkbox(&mut selected, label).clicked() {
+                                    toggle_tag_keys.push(key.to_string());
+                                }
+                            }
+
+                            ui.add_space(4.0);
+
+                            if ui.button("この生徒のタグを全解除").clicked() {
+                                clear_tags_for_selected = true;
+                            }
+                        }
+
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.label(RichText::new("タグ登録と割り当て").strong());
+
+                        if ui.button("新しいタグを追加").clicked() {
+                            add_tag = true;
+                        }
+
+                        ui.add_space(6.0);
+                        if self.tag_forms.is_empty() {
+                            ui.label("登録済みタグはありません。");
+                        } else {
+                            let used_keys = self
+                                .tag_forms
+                                .iter()
+                                .map(|tag| tag.key.trim().to_string())
+                                .collect::<HashSet<_>>();
+
+                            for (tag_idx, tag) in self.tag_forms.iter_mut().enumerate() {
+                                ui.horizontal(|ui| {
+                                    ui.label("key");
+                                    let key_changed = ui.text_edit_singleline(&mut tag.key).changed();
+                                    ui.label("ラベル");
+                                    let label_changed = ui.text_edit_singleline(&mut tag.label).changed();
+                                    ui.label("記号");
+                                    let symbol_changed = ui.text_edit_singleline(&mut tag.symbol).changed();
+
+                                    if ui.button("削除").clicked() {
+                                        remove_tag_idx = Some(tag_idx);
+                                    }
+
+                                    if key_changed || label_changed || symbol_changed {
+                                        tag_definition_changed = true;
+                                    }
+                                });
+                            }
+
+                            if used_keys.len() != self.tag_forms.len() {
+                                ui.colored_label(
+                                    Color32::from_rgb(220, 120, 20),
+                                    "key が空、または重複しているタグは出力に含まれません。",
+                                );
+                            }
+                        }
                     }
                 } else {
                     ui.label("生徒を追加して選択してください。");
@@ -2114,6 +2403,66 @@ impl SekigaeApp {
 
         if import_preferences {
             self.import_preferences_from_forms();
+        }
+
+        if add_tag {
+            let used_keys = self
+                .tag_forms
+                .iter()
+                .map(|tag| tag.key.trim().to_string())
+                .collect::<HashSet<_>>();
+            let mut tag = Self::default_tag_form();
+            tag.key = Self::next_unused_tag_key(&used_keys);
+            self.tag_forms.push(tag);
+            self.clear_result_if_needed();
+            self.clear_messages();
+        }
+
+        if tag_definition_changed {
+            self.clear_result_if_needed();
+            self.clear_messages();
+        }
+
+        if let Some(tag_idx) = remove_tag_idx
+            && tag_idx < self.tag_forms.len()
+        {
+            let removed_key = self.tag_forms[tag_idx].key.trim().to_string();
+            self.tag_forms.remove(tag_idx);
+            if !removed_key.is_empty() {
+                self.remove_tag_from_students(&removed_key);
+            }
+            self.clear_result_if_needed();
+            self.clear_messages();
+        }
+
+        if let Some(student_idx) = self.selected_student
+            && student_idx < self.students.len()
+        {
+            if clear_tags_for_selected {
+                self.students[student_idx].tags.clear();
+                self.clear_result_if_needed();
+                self.clear_messages();
+            }
+
+            if !toggle_tag_keys.is_empty() {
+                let valid_tags = self.build_tag_key_set();
+                let mut tags = self.students[student_idx].tags.clone();
+
+                for key in toggle_tag_keys {
+                    let selected = tags.iter().any(|existing| *existing == key);
+                    let mut student = self.students[student_idx].clone();
+                    student.tags = tags.clone();
+                    Self::assign_tag_to_student(&mut student, &key, !selected);
+                    tags = student.tags;
+                }
+
+                tags = Self::sanitize_student_tags(&tags, &valid_tags);
+                if tags != self.students[student_idx].tags {
+                    self.students[student_idx].tags = tags;
+                    self.clear_result_if_needed();
+                    self.clear_messages();
+                }
+            }
         }
 
         if remove_selected
@@ -2662,6 +3011,7 @@ impl SekigaeApp {
             self.result_cell_size()
         };
         let built_students = self.build_students();
+        let tag_defs = self.build_tags_map();
 
         ui.label(RichText::new(format!("sekigae3 cost: {:.3}", result.cost)).strong());
 
@@ -2721,7 +3071,13 @@ impl SekigaeApp {
                                 let text = match result.layout.get(idx).and_then(|x| *x) {
                                     Some(student_idx) if student_idx < built_students.len() => {
                                         let student = &built_students[student_idx];
-                                        format!("{}\n({})", student.name, student.number)
+                                        let tags = Self::student_tag_symbols_with_defs(&student.tags, &tag_defs);
+                                        let name = if tags.is_empty() {
+                                            student.name.clone()
+                                        } else {
+                                            format!("{} {}", student.name, tags)
+                                        };
+                                        format!("{}\n({})", name, student.number)
                                     }
                                     _ => "-".to_string(),
                                 };
@@ -2769,7 +3125,13 @@ impl SekigaeApp {
 
                                         if should_display {
                                             let student = &built_students[student_idx];
-                                            format!("{}\n({})", student.name, student.number)
+                                            let tags = Self::student_tag_symbols_with_defs(&student.tags, &tag_defs);
+                                            let name = if tags.is_empty() {
+                                                student.name.clone()
+                                            } else {
+                                                format!("{} {}", student.name, tags)
+                                            };
+                                            format!("{}\n({})", name, student.number)
                                         } else {
                                             "?".to_string()
                                         }
@@ -2844,6 +3206,12 @@ impl SekigaeApp {
             if ui.button("参照").clicked() {
                 pick_typ_file = true;
             }
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("出力内容");
+            ui.checkbox(&mut self.student_view, "生徒側");
+            ui.checkbox(&mut self.teacher_view, "教師側");
         });
 
         ui.horizontal(|ui| {

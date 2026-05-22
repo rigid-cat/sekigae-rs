@@ -1,5 +1,5 @@
-#let input-bool(name, default: "false") = {
-  (sys.inputs.at(name, default: str(default))) == "true"
+#let input-bool(name, default: false) = {
+  (sys.inputs.at(name, default: default))
 }
 
 #let student_view = input-bool("student_view")
@@ -13,14 +13,32 @@
 
 #let data = json("seats.json")
 
+#let tag-defs = data.at("tags", default: (:))
+
 #let marks(student) = {
-  if student.tags == none {
+  let tags = student.at("tags", default: ())
+
+  if tags.len() == 0 {
     return ""
   }
 
-  student.tags
-    .map(tag => data.tags.at(tag, default: "").symbol)
-    .join(",")
+  tags
+    .map(tag => tag-defs.at(tag, default: (:)).at("symbol", default: ""))
+    .filter(symbol => symbol != "")
+    .join(" ")
+}
+
+#let tag-table() = {
+  if tag-defs.len() == 0 {
+    []
+  } else {
+    table(columns: 2, align: left, stroke: none,
+      ..tag-defs.keys().map(tag => (
+        tag-defs.at(tag, default: (:)).at("symbol", default: ""),
+        tag-defs.at(tag, default: (:)).at("label", default: ""),
+      )).flatten()
+    )
+  }
 }
 
 #let seat(id) = {
@@ -102,17 +120,10 @@
   ]
 }
 
-#let tag-table =  {table(columns: 2, align: left, stroke: none,
-  ..data.tags.keys().map((tag) => (
-    data.tags.at(tag).symbol,
-    data.tags.at(tag).label
-  )).flatten()
-)}
-
 #if student_view {
   date
   seating-chart()
-  tag-table
+  tag-table()
 }
 
 #pagebreak(weak:true)
@@ -120,5 +131,5 @@
 #if teacher_view {
   date
   seating-chart(teacher: true)
-  tag-table
+  tag-table()
 }
