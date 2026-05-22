@@ -2,6 +2,7 @@
   (sys.inputs.at(name, default: str(default))) == "true"
 }
 
+#let student_view = input-bool("student_view")
 #let teacher_view = input-bool("teacher_view")
 
 #set page(paper: "a4", flipped: true, 
@@ -58,48 +59,66 @@
   )
 }
 
-#let seats = {
-  if teacher_view {
-    data.seats
-      .rev()
-      .map(row => row.rev())
-  } else {
-    data.seats
+#let date = text(size: 11pt)[#data.date～]
+
+#let seating-chart(teacher: false) = { 
+
+  let seats = {
+    if teacher {
+      data.seats
+        .rev()
+        .map(row => row.rev())
+    } else {
+      data.seats
+    }
   }
+
+  align(center+horizon)[
+
+    #{
+      if not teacher {
+        box(width: 81mm, stroke: 2pt, inset: (y: 1.5mm))[#align(center+horizon)[#text(size: 14pt)[教卓]]]
+      }
+    }
+    #move(dx: 0mm)[
+      #grid(columns: data.layout.cols, align: center, inset: (x: 1mm, y: 1.5mm),
+        ..seats.map(row =>
+          row.map(id =>
+            if id == none {
+              ""
+            } else {
+              let s = data.students.at(str(id))
+              seat(id)
+            }
+          )
+        ).flatten()
+      )
+    ]
+    #{
+      if teacher {
+        box(width: 81mm, stroke: 2pt, inset: (y: 1.5mm))[#align(center+horizon)[#text(size: 14pt)[教卓]]]
+      }
+    }
+  ]
 }
 
-#align(center+horizon)[
-  #align(left)[#text(size: 11pt)[#data.date～]]
-
-  #{
-    if not teacher_view {
-      box(width: 81mm, stroke: 2pt, inset: (y: 1.5mm))[#align(center+horizon)[#text(size: 14pt)[教卓]]]
-    }
-  }
-  #move(dx: 0mm)[
-    #grid(columns: data.layout.cols, align: center, inset: (x: 1mm, y: 1.5mm),
-      ..seats.map(row =>
-        row.map(id =>
-          if id == none {
-            ""
-          } else {
-            let s = data.students.at(str(id))
-            seat(id)
-          }
-        )
-      ).flatten()
-    )
-  ]
-  #{
-    if teacher_view {
-      box(width: 81mm, stroke: 2pt, inset: (y: 1.5mm))[#align(center+horizon)[#text(size: 14pt)[教卓]]]
-    }
-  }
-]
-
-#table(columns: 2, align: left, stroke: none,
+#let tag-table =  {table(columns: 2, align: left, stroke: none,
   ..data.tags.keys().map((tag) => (
     data.tags.at(tag).symbol,
     data.tags.at(tag).label
   )).flatten()
-)
+)}
+
+#if student_view {
+  date
+  seating-chart()
+  tag-table
+}
+
+#pagebreak(weak:true)
+
+#if teacher_view {
+  date
+  seating-chart(teacher: true)
+  tag-table
+}
