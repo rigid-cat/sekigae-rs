@@ -1,13 +1,49 @@
-#let teacher_view = false
+#let input-bool(name, default: false) = {
+  (sys.inputs.at(name, default: default))
+}
+
+#let student_view = input-bool("student_view")
+#let teacher_view = input-bool("teacher_view")
 
 #set page(paper: "a4", flipped: true, 
-  margin: (top: 0mm, bottom: 5mm, x: 10mm)
+  margin: (top: 5mm, bottom: 5mm, x: 5mm)
 )
 
-#set text(font: "BIZ UDGothic", size: 9pt, weight: 500)
+#set text(font: "UDEV Gothic", size: 9pt, weight: 500)
 
-#let seat(id, last_name, first_name, last_kana, first_kana) = {
-  grid(columns: (5mm, auto), align: center, 
+#let data = json("seats.json")
+
+#let tag-defs = data.at("tags", default: (:))
+
+#let marks(student) = {
+  let tags = student.at("tags", default: ())
+
+  if tags.len() == 0 {
+    return ""
+  }
+
+  tags
+    .map(tag => tag-defs.at(tag, default: (:)).at("symbol", default: ""))
+    .filter(symbol => symbol != "")
+    .join(" ")
+}
+
+#let tag-table() = {
+  if tag-defs.len() == 0 {
+    []
+  } else {
+    table(columns: 2, align: left, stroke: none,
+      ..tag-defs.keys().map(tag => (
+        tag-defs.at(tag, default: (:)).at("symbol", default: ""),
+        tag-defs.at(tag, default: (:)).at("label", default: ""),
+      )).flatten()
+    )
+  }
+}
+
+#let seat(id) = {
+  let s = data.students.at(str(id))
+  grid(columns: (4mm, auto, 4mm), align: center, inset: (x: .5mm),
     align(top)[#id],
     table(columns: 35mm, 
     align: center+horizon, 
@@ -24,50 +60,76 @@
         (top: 1pt+gray)
       }
     }, 
-      [#last_kana],
-      text(size: 16pt)[#last_name],
-      [#first_name (#first_kana)]
-    )
+    [
+      #if s.last_kana != none {
+        s.last_kana
+      } else { " " }
+    ],
+    text(size: 14pt)[#s.last_name],
+    [
+      #s.first_name 
+      #if s.first_kana != none {
+        " (" + s.first_kana + ")"
+      } else { " " }
+    ]
+    ),
+    align(left+bottom)[#marks(s)]
   )
 }
 
-#let data = json("seats.json")
+#let date = text(size: 11pt)[#data.date～]
 
-#let seats = {
-  if teacher_view {
-    data.seats
-      .rev()
-      .map(row => row.rev())
-  } else {
-    data.seats
+#let seating-chart(teacher: false) = { 
+
+  let seats = {
+    if teacher {
+      data.seats
+        .rev()
+        .map(row => row.rev())
+    } else {
+      data.seats
+    }
   }
+
+  align(center+horizon)[
+
+    #{
+      if not teacher {
+        box(width: 81mm, stroke: 2pt, inset: (y: 1.5mm))[#align(center+horizon)[#text(size: 14pt)[教卓]]]
+      }
+    }
+    #move(dx: 0mm)[
+      #grid(columns: data.layout.cols, align: center, inset: (x: 1mm, y: 1.5mm),
+        ..seats.map(row =>
+          row.map(id =>
+            if id == none {
+              ""
+            } else {
+              let s = data.students.at(str(id))
+              seat(id)
+            }
+          )
+        ).flatten()
+      )
+    ]
+    #{
+      if teacher {
+        box(width: 81mm, stroke: 2pt, inset: (y: 1.5mm))[#align(center+horizon)[#text(size: 14pt)[教卓]]]
+      }
+    }
+  ]
 }
 
-#align(center+horizon)[
-  #align(left)[#text(size: 14pt)[#data.date～]]
+#if student_view {
+  date
+  seating-chart()
+  tag-table()
+}
 
-  #{
-    if not teacher_view {
-      box(width: 80mm, height: 10mm, stroke: 2pt)[#text(size: 14pt)[教卓]]
-    }
-  }
-  #move(dx: -2.5mm)[
-    #grid(columns: data.layout.cols, align: center, inset: (x: 3mm, y: 2mm),
-      ..seats.map(row =>
-        row.map(id =>
-          if id == none {
-            ""
-          } else {
-            let s = data.students.at(str(id))
-            seat(id, s.last_name, s.first_name, s.last_kana, s.first_kana)
-          }
-        )
-      ).flatten()
-    )
-  ]
-  #{
-    if teacher_view {
-      box(width: 80mm, height: 10mm, stroke: 2pt)[#text(size: 14pt)[教卓]]
-    }
-  }
-]
+#pagebreak(weak:true)
+
+#if teacher_view {
+  date
+  seating-chart(teacher: true)
+  tag-table()
+}

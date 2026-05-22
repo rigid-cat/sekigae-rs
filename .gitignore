@@ -1,6 +1,7 @@
 /target
 seats.pdf
 seats.json
-/fonts
+seats.png
+seats.svg
 /config.json
 /*_students.json
