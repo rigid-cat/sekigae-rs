@@ -31,6 +31,7 @@ pub struct PreferencesConfig {
 }
 
 pub fn load_preferences_config(path: impl AsRef<Path>) -> Result<PreferencesConfig, String> {
+    log::info!("loading preferences config: {}", path.as_ref().display());
     let text = std::fs::read_to_string(path.as_ref()).map_err(|err| {
         format!(
             "{} の読み込みに失敗しました: {}",
@@ -96,6 +97,7 @@ fn parse_number_columns(row: &[String], range: std::ops::Range<usize>) -> Vec<u1
 pub fn fetch_student_preferences(
     url: &str,
 ) -> Result<HashMap<u16, FetchedStudentPreference>, Box<dyn std::error::Error>> {
+    log::info!("fetching student preferences");
     let client = Client::new();
     let response: SheetsResponse = client.get(url).send()?.json()?;
 
@@ -124,6 +126,7 @@ pub fn fetch_student_preferences(
         );
     }
 
+    log::info!("fetched student preferences: {} rows", preferences.len());
     Ok(preferences)
 }
 

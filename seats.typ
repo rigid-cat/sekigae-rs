@@ -1,9 +1,7 @@
-#let input-bool(name, default: false) = {
-  (sys.inputs.at(name, default: default))
-}
+#import sys: inputs
 
-#let student_view = input-bool("student_view")
-#let teacher_view = input-bool("teacher_view")
+#let student_view = inputs.at("student_view", default: false)
+#let teacher_view = inputs.at("teacher_view", default: false)
 
 #set page(paper: "a4", flipped: true, 
   margin: (top: 5mm, bottom: 5mm, x: 5mm)
@@ -11,7 +9,7 @@
 
 #set text(font: "UDEV Gothic", size: 9pt, weight: 500)
 
-#let data = json("seats.json")
+#let data = json(inputs.data)
 
 #let tag-defs = data.at("tags", default: (:))
 
@@ -22,10 +20,7 @@
     return ""
   }
 
-  tags
-    .map(tag => tag-defs.at(tag, default: (:)).at("symbol", default: ""))
-    .filter(symbol => symbol != "")
-    .join(" ")
+  tags.join(" ")
 }
 
 #let tag-table() = {
@@ -34,7 +29,7 @@
   } else {
     table(columns: 2, align: left, stroke: none,
       ..tag-defs.keys().map(tag => (
-        tag-defs.at(tag, default: (:)).at("symbol", default: ""),
+        tag,
         tag-defs.at(tag, default: (:)).at("label", default: ""),
       )).flatten()
     )

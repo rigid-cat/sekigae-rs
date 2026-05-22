@@ -8,7 +8,7 @@ struct CorrectedDistanceFn;
 
 impl sekigae3::DistanceFn for CorrectedDistanceFn {
     fn distance(&self, a: (i16, i16), b: (i16, i16)) -> u16 {
-        (((a.0 - b.0).abs() - 1).pow(2) + ((a.1 - b.1).abs()).pow(2)) as u16
+        (((a.0 - b.0).abs()).pow(2) + ((a.1 - b.1).abs() + 1).pow(2)) as u16
     }
 }
 
@@ -135,6 +135,7 @@ pub fn find_best_seating_with_blocked(
 
     let mut pair_weight_sum: HashMap<(usize, usize), f32> = HashMap::new();
     for (a, student) in students.iter().enumerate() {
+        let avoid_weight = -soft_scale;
         add_pair_weights(
             &mut pair_weight_sum,
             &number_to_idx,
@@ -148,6 +149,20 @@ pub fn find_best_seating_with_blocked(
             a,
             &student.forced_close_to,
             FORCED_PAIR_WEIGHT,
+        );
+        add_pair_weights(
+            &mut pair_weight_sum,
+            &number_to_idx,
+            a,
+            &student.avoid,
+            avoid_weight,
+        );
+        add_pair_weights(
+            &mut pair_weight_sum,
+            &number_to_idx,
+            a,
+            &student.forced_avoid,
+            -FORCED_PAIR_WEIGHT,
         );
     }
 
