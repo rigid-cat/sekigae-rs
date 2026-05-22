@@ -12,6 +12,23 @@ impl sekigae3::DistanceFn for CorrectedDistanceFn {
     }
 }
 
+fn add_pair_weights(
+    pair_weight_sum: &mut HashMap<(usize, usize), f32>,
+    number_to_idx: &HashMap<u16, usize>,
+    a: usize,
+    wanted_ids: &[u16],
+    weight: f32,
+) {
+    for wanted in wanted_ids {
+        if let Some(&b) = number_to_idx.get(wanted)
+            && a != b
+        {
+            let key = if a < b { (a, b) } else { (b, a) };
+            *pair_weight_sum.entry(key).or_insert(0.0) += weight;
+        }
+    }
+}
+
 /// empty_seat_indices で指定した席を必ず空席に固定したまま探索する。
 pub fn find_best_seating_with_blocked(
     students: &[Student],
@@ -118,25 +135,20 @@ pub fn find_best_seating_with_blocked(
 
     let mut pair_weight_sum: HashMap<(usize, usize), f32> = HashMap::new();
     for (a, student) in students.iter().enumerate() {
-        for wanted in &student.close_to {
-            if let Some(&b) = number_to_idx.get(wanted) {
-                if a == b {
-                    continue;
-                }
-                let key = if a < b { (a, b) } else { (b, a) };
-                *pair_weight_sum.entry(key).or_insert(0.0) += soft_scale;
-            }
-        }
-
-        for wanted in &student.forced_close_to {
-            if let Some(&b) = number_to_idx.get(wanted) {
-                if a == b {
-                    continue;
-                }
-                let key = if a < b { (a, b) } else { (b, a) };
-                *pair_weight_sum.entry(key).or_insert(0.0) += FORCED_PAIR_WEIGHT;
-            }
-        }
+        add_pair_weights(
+            &mut pair_weight_sum,
+            &number_to_idx,
+            a,
+            &student.close_to,
+            soft_scale,
+        );
+        add_pair_weights(
+            &mut pair_weight_sum,
+            &number_to_idx,
+            a,
+            &student.forced_close_to,
+            FORCED_PAIR_WEIGHT,
+        );
     }
 
     let mut pair_edges = vec![Vec::<(u16, f32)>::new(); total_solver_students];

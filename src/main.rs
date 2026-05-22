@@ -1,7 +1,8 @@
+#[cfg(feature = "google-fetch")]
+mod fetch;
 mod gui;
 mod model;
 mod solver;
-mod fetch;
 
 use gui::SekigaeApp;
 
@@ -12,7 +13,7 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        "sejigae-rs",
+        "sekigae-rs",
         options,
         Box::new(|cc| Ok(Box::new(SekigaeApp::new(cc)))),
     )

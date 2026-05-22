@@ -4,7 +4,7 @@ use eframe::egui::{
 };
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
@@ -13,12 +13,21 @@ use std::time::{Duration, Instant};
 use typst::layout::PagedDocument;
 use typst_as_lib::TypstEngine;
 
-use crate::fetch::{fetch_student_preferences, parse_targets, SeatRange};
+#[cfg(feature = "google-fetch")]
+use crate::fetch::{fetch_student_preferences, load_preferences_config, parse_targets};
 use crate::model::{AnnealingConfig, SeatingResult, Student, Target};
 use crate::solver::find_best_seating_with_blocked;
 
 const APP_TITLE: &str = "sekigae-rs";
 const DEFAULT_SEATS_TYP_TEMPLATE: &str = include_str!("../seats.typ");
+const DEFAULT_ROWS: usize = 4;
+const DEFAULT_COLS: usize = 5;
+const DEFAULT_STUDENTS_JSON_PATH: &str = "./students.json";
+const DEFAULT_SEATS_JSON_PATH: &str = "./seats.json";
+const DEFAULT_TYP_PATH: &str = "./seats.typ";
+const DEFAULT_PDF_OUTPUT_PATH: &str = "./seats.pdf";
+const DEFAULT_PNG_OUTPUT_PATH: &str = "./seats.png";
+const DEFAULT_SVG_OUTPUT_PATH: &str = "./seats.svg";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum UiStage {
@@ -28,16 +37,11 @@ enum UiStage {
     SolveExport,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 enum TargetEditMode {
+    #[default]
     Soft,
     Forced,
-}
-
-impl Default for TargetEditMode {
-    fn default() -> Self {
-        Self::Soft
-    }
 }
 
 impl TargetEditMode {
@@ -45,6 +49,42 @@ impl TargetEditMode {
         match self {
             TargetEditMode::Soft => "希望席",
             TargetEditMode::Forced => "確定希望",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RelationKind {
+    CloseTo,
+    Avoid,
+}
+
+impl RelationKind {
+    fn title(self) -> &'static str {
+        match self {
+            RelationKind::CloseTo => "隣になりたい生徒 (sekigae3)",
+            RelationKind::Avoid => "遠ざかりたい生徒 (sekigae3)",
+        }
+    }
+
+    fn summary_label(self) -> &'static str {
+        match self {
+            RelationKind::CloseTo => "隣希望",
+            RelationKind::Avoid => "遠ざかり希望",
+        }
+    }
+
+    fn clear_button_label(self) -> &'static str {
+        match self {
+            RelationKind::CloseTo => "この生徒の隣希望をクリア",
+            RelationKind::Avoid => "この生徒の遠ざかり希望をクリア",
+        }
+    }
+
+    fn scroll_id(self) -> &'static str {
+        match self {
+            RelationKind::CloseTo => "targets-close-to-options-scroll",
+            RelationKind::Avoid => "targets-avoid-options-scroll",
         }
     }
 }
@@ -126,7 +166,7 @@ pub struct SekigaeApp {
     animation_last_update: std::time::Instant,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 struct StudentForm {
     id: Option<u16>,
     last_name: String,
@@ -175,12 +215,6 @@ struct StudentProfile {
     forced_avoid: Vec<u16>,
 }
 
-#[derive(Deserialize)]
-struct PreferencesConfig {
-    preferences_url: String,
-    seat_preferences: HashMap<String, SeatRange>,
-}
-
 #[derive(Serialize)]
 struct SeatsLayout {
     rows: usize,
@@ -198,46 +232,34 @@ struct SeatsJsonDocument {
 impl SekigaeApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         install_japanese_fonts(&cc.egui_ctx);
+        Self::initial_state()
+    }
 
-        let rows = 4;
-        let cols = 5;
-
+    fn initial_state() -> Self {
         Self {
-            rows,
-            cols,
+            rows: DEFAULT_ROWS,
+            cols: DEFAULT_COLS,
             current_stage: UiStage::Setup,
-            empty_seats: vec![false; rows * cols],
-            students: vec![StudentForm {
-                id: None,
-                last_name: String::new(),
-                first_name: String::new(),
-                last_kana: String::new(),
-                first_kana: String::new(),
-                targets: Vec::new(),
-                forced_targets: Vec::new(),
-                close_to: Vec::new(),
-                forced_close_to: Vec::new(),
-                avoid: Vec::new(),
-                forced_avoid: Vec::new(),
-            }],
+            empty_seats: vec![false; DEFAULT_ROWS * DEFAULT_COLS],
+            students: vec![StudentForm::default()],
             selected_student: Some(0),
             target_presets: Vec::new(),
             new_preset_name: String::new(),
             use_custom_date: false,
             custom_date: Local::now().format("%Y/%m/%d").to_string(),
-            students_json_path: "./students.json".to_string(),
-            seats_json_path: "./seats.json".to_string(),
-            typ_path: "./seats.typ".to_string(),
-            pdf_output_path: "./seats.pdf".to_string(),
-            png_output_path: "./seats.png".to_string(),
-            svg_output_path: "./seats.svg".to_string(),
+            students_json_path: DEFAULT_STUDENTS_JSON_PATH.to_string(),
+            seats_json_path: DEFAULT_SEATS_JSON_PATH.to_string(),
+            typ_path: DEFAULT_TYP_PATH.to_string(),
+            pdf_output_path: DEFAULT_PDF_OUTPUT_PATH.to_string(),
+            png_output_path: DEFAULT_PNG_OUTPUT_PATH.to_string(),
+            svg_output_path: DEFAULT_SVG_OUTPUT_PATH.to_string(),
             export_pdf: true,
             export_png: false,
             export_svg: false,
             png_ppi: 144,
             config: AnnealingConfig {
                 seed: 0,
-                budget: rows * cols,
+                budget: DEFAULT_ROWS * DEFAULT_COLS,
                 randomness: 0.0,
             },
             target_edit_mode: TargetEditMode::Soft,
@@ -346,41 +368,8 @@ impl SekigaeApp {
     }
 
     fn reset_all(&mut self, ctx: &egui::Context) {
-        self.rows = 4;
-        self.cols = 5;
-        self.current_stage = UiStage::Setup;
-        self.empty_seats = vec![false; self.rows * self.cols];
-        self.students = vec![Self::default_student_form()];
-        self.selected_student = Some(0);
-        self.target_presets.clear();
-        self.new_preset_name.clear();
-
-        self.use_custom_date = false;
-        self.custom_date = Local::now().format("%Y/%m/%d").to_string();
-        self.students_json_path = "./students.json".to_string();
-        self.seats_json_path = "./seats.json".to_string();
-        self.typ_path = "./seats.typ".to_string();
-        self.pdf_output_path = "./seats.pdf".to_string();
-        self.png_output_path = "./seats.png".to_string();
-        self.svg_output_path = "./seats.svg".to_string();
-        self.export_pdf = true;
-        self.export_png = false;
-        self.export_svg = false;
-        self.png_ppi = 144;
-
-        self.config = AnnealingConfig {
-            seed: 0,
-            budget: self.rows * self.cols,
-            randomness: 0.0,
-        };
-        self.target_edit_mode = TargetEditMode::Soft;
-
-        self.result = None;
-        self.last_error = None;
-        self.last_info = Some("すべてリセットしました。".to_string());
-
-        self.is_solving = false;
-        self.solver_rx = None;
+        *self = Self::initial_state();
+        self.set_info("すべてリセットしました。");
         self.set_window_busy_state(ctx, false);
     }
 
@@ -415,22 +404,6 @@ impl SekigaeApp {
         );
 
         (plus, minus)
-    }
-
-    fn default_student_form() -> StudentForm {
-        StudentForm {
-            id: None,
-            last_name: String::new(),
-            first_name: String::new(),
-            last_kana: String::new(),
-            first_kana: String::new(),
-            targets: Vec::new(),
-            forced_targets: Vec::new(),
-            close_to: Vec::new(),
-            forced_close_to: Vec::new(),
-            avoid: Vec::new(),
-            forced_avoid: Vec::new(),
-        }
     }
 
     fn ensure_valid_selected_student(&mut self) {
@@ -499,7 +472,10 @@ impl SekigaeApp {
 
             ui.separator();
             // 全画面表示は表示モードとは独立したトグルとする
-            if ui.checkbox(&mut self.result_fullscreen, "全画面表示").changed() {
+            if ui
+                .checkbox(&mut self.result_fullscreen, "全画面表示")
+                .changed()
+            {
                 changed = true;
             }
             if changed {
@@ -568,6 +544,91 @@ impl SekigaeApp {
         out
     }
 
+    fn relation_ids(student: &StudentForm, relation: RelationKind, mode: TargetEditMode) -> &[u16] {
+        match (relation, mode) {
+            (RelationKind::CloseTo, TargetEditMode::Soft) => &student.close_to,
+            (RelationKind::CloseTo, TargetEditMode::Forced) => &student.forced_close_to,
+            (RelationKind::Avoid, TargetEditMode::Soft) => &student.avoid,
+            (RelationKind::Avoid, TargetEditMode::Forced) => &student.forced_avoid,
+        }
+    }
+
+    fn relation_ids_mut(
+        student: &mut StudentForm,
+        relation: RelationKind,
+        mode: TargetEditMode,
+    ) -> &mut Vec<u16> {
+        match (relation, mode) {
+            (RelationKind::CloseTo, TargetEditMode::Soft) => &mut student.close_to,
+            (RelationKind::CloseTo, TargetEditMode::Forced) => &mut student.forced_close_to,
+            (RelationKind::Avoid, TargetEditMode::Soft) => &mut student.avoid,
+            (RelationKind::Avoid, TargetEditMode::Forced) => &mut student.forced_avoid,
+        }
+    }
+
+    fn relation_summary(ids: &[u16], id_to_name: &BTreeMap<u16, String>) -> String {
+        if ids.is_empty() {
+            return "指定なし".to_string();
+        }
+
+        ids.iter()
+            .map(|id| {
+                id_to_name
+                    .get(id)
+                    .map_or_else(|| format!("#{}", id), |name| format!("#{} {}", id, name))
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    fn normalize_relation_list(ids: &mut Vec<u16>, self_id: u16, valid_ids: &HashSet<u16>) -> bool {
+        let sanitized = Self::sanitize_relation_ids(ids, self_id, valid_ids);
+        if *ids == sanitized {
+            false
+        } else {
+            *ids = sanitized;
+            true
+        }
+    }
+
+    fn normalize_student_relations(
+        student: &mut StudentForm,
+        self_id: u16,
+        valid_ids: &HashSet<u16>,
+    ) -> bool {
+        let mut changed = false;
+        changed |= Self::normalize_relation_list(&mut student.close_to, self_id, valid_ids);
+        changed |= Self::normalize_relation_list(&mut student.forced_close_to, self_id, valid_ids);
+        changed |= Self::normalize_relation_list(&mut student.avoid, self_id, valid_ids);
+        changed |= Self::normalize_relation_list(&mut student.forced_avoid, self_id, valid_ids);
+        changed
+    }
+
+    fn toggle_relation_ids(
+        ids: &mut Vec<u16>,
+        toggled_ids: &[u16],
+        self_id: u16,
+        valid_ids: &HashSet<u16>,
+    ) -> bool {
+        if toggled_ids.is_empty() {
+            return false;
+        }
+
+        let before = ids.clone();
+        for &id in toggled_ids {
+            if id == self_id {
+                continue;
+            }
+            if let Some(pos) = ids.iter().position(|target| *target == id) {
+                ids.remove(pos);
+            } else {
+                ids.push(id);
+            }
+        }
+        Self::normalize_relation_list(ids, self_id, valid_ids);
+        *ids != before
+    }
+
     fn sanitize_target_list(&self, targets: &[usize]) -> Vec<usize> {
         Self::sanitize_targets_for_grid(self.seat_count(), &self.empty_seats, targets)
     }
@@ -593,15 +654,19 @@ impl SekigaeApp {
         }
     }
 
-    fn normalize_student_targets(student: &mut StudentForm, seat_count: usize, empty_seats: &[bool]) {
-        student.targets = Self::sanitize_targets_for_grid(seat_count, empty_seats, &student.targets);
-        student.forced_targets = Self::sanitize_targets_for_grid(
-            seat_count,
-            empty_seats,
-            &student.forced_targets,
-        );
+    fn normalize_student_targets(
+        student: &mut StudentForm,
+        seat_count: usize,
+        empty_seats: &[bool],
+    ) {
+        student.targets =
+            Self::sanitize_targets_for_grid(seat_count, empty_seats, &student.targets);
+        student.forced_targets =
+            Self::sanitize_targets_for_grid(seat_count, empty_seats, &student.forced_targets);
         let forced = student.forced_targets.clone();
-        student.targets.retain(|seat_idx| !forced.contains(seat_idx));
+        student
+            .targets
+            .retain(|seat_idx| !forced.contains(seat_idx));
     }
 
     fn apply_grid_transform(
@@ -961,10 +1026,16 @@ impl SekigaeApp {
                 let name = Self::student_display_name(entry, i);
                 let number = assigned_ids.get(i).copied().unwrap_or(u16::MAX);
                 let close_to = Self::sanitize_relation_ids(&entry.close_to, number, &valid_ids);
-                let forced_close_to = Self::sanitize_relation_ids(&entry.forced_close_to, number, &valid_ids);
-                let avoid = Self::sanitize_relation_ids(&entry.avoid, number, &valid_ids);
-                let forced_avoid = Self::sanitize_relation_ids(&entry.forced_avoid, number, &valid_ids);
-                Student::new(&name, number, targets, forced_targets, close_to, forced_close_to, avoid, forced_avoid)
+                let forced_close_to =
+                    Self::sanitize_relation_ids(&entry.forced_close_to, number, &valid_ids);
+                Student {
+                    name,
+                    number,
+                    targets,
+                    forced_targets,
+                    close_to,
+                    forced_close_to,
+                }
             })
             .collect()
     }
@@ -1080,7 +1151,11 @@ impl SekigaeApp {
             return String::new();
         }
         let avoid_ids = &self.students[student_idx].avoid;
-        avoid_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(", ")
+        avoid_ids
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     fn register_current_as_preset(&mut self, student_idx: usize) {
@@ -1096,7 +1171,9 @@ impl SekigaeApp {
 
         let mode = self.target_edit_mode;
         let targets = match mode {
-            TargetEditMode::Soft => self.sanitize_preset_targets(&self.students[student_idx].targets),
+            TargetEditMode::Soft => {
+                self.sanitize_preset_targets(&self.students[student_idx].targets)
+            }
             TargetEditMode::Forced => {
                 self.sanitize_preset_targets(&self.students[student_idx].forced_targets)
             }
@@ -1108,14 +1185,22 @@ impl SekigaeApp {
             .position(|preset| preset.name == name && preset.mode == mode)
         {
             self.target_presets[existing_idx].targets = targets;
-            self.set_info(format!("{}プリセット '{}' を更新しました。", mode.title(), name));
+            self.set_info(format!(
+                "{}プリセット '{}' を更新しました。",
+                mode.title(),
+                name
+            ));
         } else {
             self.target_presets.push(TargetPreset {
                 name: name.clone(),
                 mode,
                 targets,
             });
-            self.set_info(format!("{}プリセット '{}' を追加しました。", mode.title(), name));
+            self.set_info(format!(
+                "{}プリセット '{}' を追加しました。",
+                mode.title(),
+                name
+            ));
         }
     }
 
@@ -1127,11 +1212,8 @@ impl SekigaeApp {
         let preset = self.target_presets[preset_idx].clone();
         let preset_name = preset.name.clone();
         let mode = self.target_edit_mode;
-        let targets = Self::sanitize_targets_for_grid(
-            self.seat_count(),
-            &self.empty_seats,
-            &preset.targets,
-        );
+        let targets =
+            Self::sanitize_targets_for_grid(self.seat_count(), &self.empty_seats, &preset.targets);
 
         let seat_count = self.seat_count();
         let empty_seats = self.empty_seats.clone();
@@ -1145,11 +1227,19 @@ impl SekigaeApp {
         }
         Self::normalize_student_targets(&mut self.students[student_idx], seat_count, &empty_seats);
         self.clear_result_if_needed();
-        self.set_info(format!("{}でプリセット '{}' を適用しました。", mode.title(), preset_name));
+        self.set_info(format!(
+            "{}でプリセット '{}' を適用しました。",
+            mode.title(),
+            preset_name
+        ));
     }
 
     fn preset_summary(&self, preset: &TargetPreset) -> String {
-        format!("[{}] {}", preset.mode.title(), self.targets_to_summary(&preset.targets))
+        format!(
+            "[{}] {}",
+            preset.mode.title(),
+            self.targets_to_summary(&preset.targets)
+        )
     }
 
     fn path_from_input(input: &str, default_value: &str) -> PathBuf {
@@ -1172,52 +1262,43 @@ impl SekigaeApp {
         }
     }
 
-    fn pick_students_json_path(&mut self) {
-        if let Some(path) = FileDialog::new().add_filter("JSON", &["json"]).pick_file() {
-            self.students_json_path = path.to_string_lossy().to_string();
-        }
-    }
-
-    fn pick_typ_path(&mut self) {
-        if let Some(path) = FileDialog::new().add_filter("Typst", &["typ"]).pick_file() {
-            self.typ_path = path.to_string_lossy().to_string();
-        }
-    }
-
-    fn pick_pdf_output_path(&mut self) {
+    fn pick_input_path(target: &mut String, filter_name: &str, extensions: &[&str]) {
         if let Some(path) = FileDialog::new()
-            .add_filter("PDF", &["pdf"])
-            .set_file_name("seats.pdf")
+            .add_filter(filter_name, extensions)
+            .pick_file()
+        {
+            *target = path.to_string_lossy().to_string();
+        }
+    }
+
+    fn pick_output_path(
+        target: &mut String,
+        filter_name: &str,
+        extensions: &[&str],
+        default_file_name: &str,
+    ) {
+        if let Some(path) = FileDialog::new()
+            .add_filter(filter_name, extensions)
+            .set_file_name(default_file_name)
             .save_file()
         {
-            self.pdf_output_path = path.to_string_lossy().to_string();
+            *target = path.to_string_lossy().to_string();
         }
     }
 
-    fn pick_png_output_path(&mut self) {
-        if let Some(path) = FileDialog::new()
-            .add_filter("PNG", &["png"])
-            .set_file_name("seats.png")
-            .save_file()
-        {
-            self.png_output_path = path.to_string_lossy().to_string();
-        }
-    }
-
-    fn pick_svg_output_path(&mut self) {
-        if let Some(path) = FileDialog::new()
-            .add_filter("SVG", &["svg"])
-            .set_file_name("seats.svg")
-            .save_file()
-        {
-            self.svg_output_path = path.to_string_lossy().to_string();
-        }
+    fn path_row(ui: &mut egui::Ui, label: &str, path: &mut String) -> bool {
+        ui.horizontal(|ui| {
+            ui.label(label);
+            ui.text_edit_singleline(path);
+            ui.button("参照").clicked()
+        })
+        .inner
     }
 
     fn load_students_from_json(&mut self) {
         self.clear_messages();
 
-        let path = Self::path_from_input(&self.students_json_path, "./students.json");
+        let path = Self::path_from_input(&self.students_json_path, DEFAULT_STUDENTS_JSON_PATH);
         let text = match fs::read_to_string(&path) {
             Ok(text) => text,
             Err(err) => {
@@ -1231,34 +1312,35 @@ impl SekigaeApp {
         };
 
         let mut loaded_presets = Vec::new();
-        let parsed_students: BTreeMap<u16, StudentProfile> = if let Ok(document) = serde_json::from_str::<StudentsJsonDocument>(&text) {
-            loaded_presets = document.target_presets;
-            document.students
-        } else {
-            let raw: BTreeMap<String, StudentProfile> = match serde_json::from_str(&text) {
-                Ok(value) => value,
-                Err(err) => {
-                    self.set_error(format!("json の形式が不正です: {}", err));
-                    return;
-                }
-            };
-
-            let mut converted = BTreeMap::new();
-            for (id_text, profile) in raw {
-                let id = match id_text.parse::<u16>() {
-                    Ok(id) if id > 0 => id,
-                    _ => {
-                        self.set_error(format!(
-                            "students.json のキー '{}' は 1..65535 の数値文字列にしてください。",
-                            id_text
-                        ));
+        let parsed_students: BTreeMap<u16, StudentProfile> =
+            if let Ok(document) = serde_json::from_str::<StudentsJsonDocument>(&text) {
+                loaded_presets = document.target_presets;
+                document.students
+            } else {
+                let raw: BTreeMap<String, StudentProfile> = match serde_json::from_str(&text) {
+                    Ok(value) => value,
+                    Err(err) => {
+                        self.set_error(format!("json の形式が不正です: {}", err));
                         return;
                     }
                 };
-                converted.insert(id, profile);
-            }
-            converted
-        };
+
+                let mut converted = BTreeMap::new();
+                for (id_text, profile) in raw {
+                    let id = match id_text.parse::<u16>() {
+                        Ok(id) if id > 0 => id,
+                        _ => {
+                            self.set_error(format!(
+                            "students.json のキー '{}' は 1..65535 の数値文字列にしてください。",
+                            id_text
+                        ));
+                            return;
+                        }
+                    };
+                    converted.insert(id, profile);
+                }
+                converted
+            };
 
         self.students = parsed_students
             .into_iter()
@@ -1300,14 +1382,7 @@ impl SekigaeApp {
         ));
     }
 
-    fn load_preferences_config() -> Result<PreferencesConfig, String> {
-        let text = fs::read_to_string("config.json")
-            .map_err(|err| format!("config.json の読み込みに失敗しました: {}", err))?;
-
-        serde_json::from_str(&text)
-            .map_err(|err| format!("config.json の形式が不正です: {}", err))
-    }
-
+    #[cfg(feature = "google-fetch")]
     fn import_preferences_from_forms(&mut self) {
         self.clear_messages();
 
@@ -1316,7 +1391,7 @@ impl SekigaeApp {
             return;
         }
 
-        let config = match Self::load_preferences_config() {
+        let config = match load_preferences_config("config.json") {
             Ok(config) => config,
             Err(err) => {
                 self.set_error(err);
@@ -1350,12 +1425,8 @@ impl SekigaeApp {
             };
 
             // フェッチした席位置の希望は確定希望に設定
-            student.forced_targets = parse_targets(
-                &pref.seat_targets_raw,
-                rows,
-                cols,
-                &config.seat_preferences,
-            );
+            student.forced_targets =
+                parse_targets(&pref.seat_targets_raw, rows, cols, &config.seat_preferences);
             // forced_seat_targets_raw は targets に設定（ソフト希望として）
             student.targets = parse_targets(
                 &pref.forced_seat_targets_raw,
@@ -1366,13 +1437,14 @@ impl SekigaeApp {
             student.close_to = pref.close_to.clone();
             student.avoid = pref.avoid.clone();
             Self::normalize_student_targets(student, seat_count, &empty_seats);
-            student.close_to = Self::sanitize_relation_ids(&student.close_to, id, &valid_ids);
-            student.avoid = Self::sanitize_relation_ids(&student.avoid, id, &valid_ids);
+            Self::normalize_student_relations(student, id, &valid_ids);
             updated += 1;
         }
 
         if updated == 0 {
-            self.set_error("取得したフォーム回答に、現在の生徒IDと一致するデータがありませんでした。");
+            self.set_error(
+                "取得したフォーム回答に、現在の生徒IDと一致するデータがありませんでした。",
+            );
             return;
         }
 
@@ -1419,7 +1491,10 @@ impl SekigaeApp {
             })
             .collect::<Vec<_>>();
 
-        StudentsJsonDocument { students, target_presets }
+        StudentsJsonDocument {
+            students,
+            target_presets,
+        }
     }
 
     fn export_students_json(&mut self) {
@@ -1431,7 +1506,7 @@ impl SekigaeApp {
             return;
         }
 
-        let path = Self::path_from_input(&self.students_json_path, "./students.json");
+        let path = Self::path_from_input(&self.students_json_path, DEFAULT_STUDENTS_JSON_PATH);
         match Self::write_json_value(&path, &students_document, "students.json") {
             Ok(()) => self.set_info(format!("students.json を出力しました: {}", path.display())),
             Err(err) => self.set_error(err),
@@ -1488,7 +1563,7 @@ impl SekigaeApp {
             }
         };
 
-        let path = Self::path_from_input(&self.seats_json_path, "./seats.json");
+        let path = Self::path_from_input(&self.seats_json_path, DEFAULT_SEATS_JSON_PATH);
         match Self::write_json_value(&path, &document, "seats.json") {
             Ok(()) => self.set_info(format!("seats.json を出力しました: {}", path.display())),
             Err(err) => self.set_error(err),
@@ -1496,10 +1571,10 @@ impl SekigaeApp {
     }
 
     fn ensure_typst_input_json(&mut self, document: &SeatsJsonDocument) -> Result<PathBuf, String> {
-        let seats_path = Self::path_from_input(&self.seats_json_path, "./seats.json");
+        let seats_path = Self::path_from_input(&self.seats_json_path, DEFAULT_SEATS_JSON_PATH);
         Self::write_json_value(&seats_path, document, "seats.json")?;
 
-        let typ_path = Self::path_from_input(&self.typ_path, "./seats.typ");
+        let typ_path = Self::path_from_input(&self.typ_path, DEFAULT_TYP_PATH);
         Self::ensure_typst_template_exists(&typ_path)?;
 
         // seats.typ 側が json("seats.json") を参照する前提なので、同階層にも配置する。
@@ -1685,7 +1760,7 @@ impl SekigaeApp {
         let mut failures = Vec::new();
 
         if self.export_pdf {
-            let path = Self::path_from_input(&self.pdf_output_path, "./seats.pdf");
+            let path = Self::path_from_input(&self.pdf_output_path, DEFAULT_PDF_OUTPUT_PATH);
             match Self::export_pdf_from_document(&typst_document, &path) {
                 Ok(()) => success.push(format!("PDF: {}", path.display())),
                 Err(err) => failures.push(err),
@@ -1693,7 +1768,7 @@ impl SekigaeApp {
         }
 
         if self.export_png {
-            let path = Self::path_from_input(&self.png_output_path, "./seats.png");
+            let path = Self::path_from_input(&self.png_output_path, DEFAULT_PNG_OUTPUT_PATH);
             match Self::export_png_from_document(&typst_document, &path, self.png_ppi) {
                 Ok(()) => success.push(format!("PNG: {} ({} ppi)", path.display(), self.png_ppi)),
                 Err(err) => failures.push(err),
@@ -1701,7 +1776,7 @@ impl SekigaeApp {
         }
 
         if self.export_svg {
-            let path = Self::path_from_input(&self.svg_output_path, "./seats.svg");
+            let path = Self::path_from_input(&self.svg_output_path, DEFAULT_SVG_OUTPUT_PATH);
             match Self::export_svg_from_document(&typst_document, &path) {
                 Ok(()) => success.push(format!("SVG: {}", path.display())),
                 Err(err) => failures.push(err),
@@ -1960,6 +2035,7 @@ impl SekigaeApp {
 
         let mut pick_students_json = false;
         let mut load_students_json = false;
+        #[cfg(feature = "google-fetch")]
         let mut import_preferences = false;
         let mut add_student = false;
         let mut remove_selected = false;
@@ -1995,6 +2071,7 @@ impl SekigaeApp {
                     if ui.button("読み込む").clicked() {
                         load_students_json = true;
                     }
+                    #[cfg(feature = "google-fetch")]
                     if ui.button("フォームから希望を反映").clicked() {
                         import_preferences = true;
                     }
@@ -2098,20 +2175,21 @@ impl SekigaeApp {
         });
 
         if add_student {
-            self.students.push(Self::default_student_form());
+            self.students.push(StudentForm::default());
             self.selected_student = Some(self.students.len() - 1);
             self.clear_result_if_needed();
             self.clear_messages();
         }
 
         if pick_students_json {
-            self.pick_students_json_path();
+            Self::pick_input_path(&mut self.students_json_path, "JSON", &["json"]);
         }
 
         if load_students_json {
             self.load_students_from_json();
         }
 
+        #[cfg(feature = "google-fetch")]
         if import_preferences {
             self.import_preferences_from_forms();
         }
@@ -2150,6 +2228,102 @@ impl SekigaeApp {
         }
     }
 
+    fn render_relation_editor(
+        &self,
+        ui: &mut egui::Ui,
+        relation: RelationKind,
+        student_idx: usize,
+        assigned_ids: &[u16],
+        id_to_name: &BTreeMap<u16, String>,
+    ) -> (bool, Vec<u16>) {
+        let mut clear = false;
+        let mut toggled_ids = Vec::new();
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.label(RichText::new(relation.title()).strong());
+        ui.label("クリックでON/OFFを切り替え");
+
+        let ids = Self::relation_ids(&self.students[student_idx], relation, self.target_edit_mode);
+        ui.label(format!(
+            "現在の{} ({}): {}",
+            relation.summary_label(),
+            self.target_edit_mode.title(),
+            Self::relation_summary(ids, id_to_name)
+        ));
+
+        if ui.button(relation.clear_button_label()).clicked() {
+            clear = true;
+        }
+
+        ui.add_space(4.0);
+        egui::ScrollArea::vertical()
+            .id_salt(relation.scroll_id())
+            .max_height(150.0)
+            .show(ui, |ui| {
+                for (other_idx, other_student) in self.students.iter().enumerate() {
+                    if other_idx == student_idx {
+                        continue;
+                    }
+
+                    let Some(&other_id) = assigned_ids.get(other_idx) else {
+                        continue;
+                    };
+
+                    let selected = Self::relation_ids(
+                        &self.students[student_idx],
+                        relation,
+                        self.target_edit_mode,
+                    )
+                    .contains(&other_id);
+                    let label = format!(
+                        "#{} {}",
+                        other_id,
+                        Self::student_display_name(other_student, other_idx)
+                    );
+                    if ui.selectable_label(selected, label).clicked() {
+                        toggled_ids.push(other_id);
+                    }
+                }
+            });
+
+        (clear, toggled_ids)
+    }
+
+    fn clear_relation(&mut self, student_idx: usize, relation: RelationKind, mode: TargetEditMode) {
+        if student_idx >= self.students.len() {
+            return;
+        }
+
+        let ids = Self::relation_ids_mut(&mut self.students[student_idx], relation, mode);
+        if !ids.is_empty() {
+            ids.clear();
+            self.clear_result_if_needed();
+            self.clear_messages();
+        }
+    }
+
+    fn apply_relation_toggles(
+        &mut self,
+        student_idx: usize,
+        relation: RelationKind,
+        mode: TargetEditMode,
+        toggled_ids: &[u16],
+        assigned_ids: &[u16],
+        valid_ids: &HashSet<u16>,
+    ) {
+        if student_idx >= self.students.len() {
+            return;
+        }
+
+        let self_id = assigned_ids.get(student_idx).copied().unwrap_or(0);
+        let ids = Self::relation_ids_mut(&mut self.students[student_idx], relation, mode);
+        if Self::toggle_relation_ids(ids, toggled_ids, self_id, valid_ids) {
+            self.clear_result_if_needed();
+            self.clear_messages();
+        }
+    }
+
     fn render_targets_stage(&mut self, ui: &mut egui::Ui) {
         self.ensure_valid_selected_student();
         let seat_cell_size = self.seat_cell_size();
@@ -2166,13 +2340,11 @@ impl SekigaeApp {
             && student_idx < self.students.len()
         {
             let self_id = assigned_ids.get(student_idx).copied().unwrap_or(0);
-            let sanitized = Self::sanitize_relation_ids(
-                &self.students[student_idx].close_to,
+            if Self::normalize_student_relations(
+                &mut self.students[student_idx],
                 self_id,
                 &valid_ids,
-            );
-            if sanitized != self.students[student_idx].close_to {
-                self.students[student_idx].close_to = sanitized;
+            ) {
                 self.clear_result_if_needed();
             }
         }
@@ -2180,13 +2352,10 @@ impl SekigaeApp {
         let mut clear_targets_for_selected = false;
         let mut clear_forced_targets_for_selected = false;
         let mut clear_close_to_for_selected = false;
-        let clear_forced_close_to_for_selected = false;
         let mut clear_avoid_for_selected = false;
-        let clear_forced_avoid_for_selected = false;
         let mut toggle_close_to_ids = Vec::new();
-        let mut toggle_forced_close_to_ids = Vec::new();
         let mut toggle_avoid_ids = Vec::new();
-        let mut toggle_forced_avoid_ids = Vec::new();
+        let mut relation_action_mode = self.target_edit_mode;
         let mut register_preset = false;
         let mut apply_preset_idx: Option<usize> = None;
         let mut remove_preset_idx: Option<usize> = None;
@@ -2249,131 +2418,26 @@ impl SekigaeApp {
                         clear_forced_targets_for_selected = true;
                     }
 
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.label(RichText::new("隣になりたい生徒 (sekigae3)").strong());
-                    ui.label("クリックでON/OFFを切り替え");
+                    relation_action_mode = self.target_edit_mode;
+                    let (clear_close_to, close_to_toggles) = self.render_relation_editor(
+                        ui,
+                        RelationKind::CloseTo,
+                        student_idx,
+                        &assigned_ids,
+                        &id_to_name,
+                    );
+                    clear_close_to_for_selected = clear_close_to;
+                    toggle_close_to_ids = close_to_toggles;
 
-                    let close_to_list = match self.target_edit_mode {
-                        TargetEditMode::Soft => &self.students[student_idx].close_to,
-                        TargetEditMode::Forced => &self.students[student_idx].forced_close_to,
-                    };
-
-                    let close_to_summary = if close_to_list.is_empty() {
-                        "指定なし".to_string()
-                    } else {
-                        close_to_list
-                            .iter()
-                            .map(|id| {
-                                if let Some(name) = id_to_name.get(id) {
-                                    format!("#{} {}", id, name)
-                                } else {
-                                    format!("#{}", id)
-                                }
-                            })
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    };
-                    ui.label(format!("現在の隣希望 ({}): {}", self.target_edit_mode.title(), close_to_summary));
-
-                    if ui.button("この生徒の隣希望をクリア").clicked() {
-                        clear_close_to_for_selected = true;
-                    }
-
-                    ui.add_space(4.0);
-                    egui::ScrollArea::vertical()
-                        .id_salt("targets-close-to-options-scroll")
-                        .max_height(150.0)
-                        .show(ui, |ui| {
-                            for (other_idx, other_student) in self.students.iter().enumerate() {
-                                if other_idx == student_idx {
-                                    continue;
-                                }
-
-                                let Some(&other_id) = assigned_ids.get(other_idx) else {
-                                    continue;
-                                };
-
-                                let selected = match self.target_edit_mode {
-                                    TargetEditMode::Soft => self.students[student_idx].close_to.contains(&other_id),
-                                    TargetEditMode::Forced => self.students[student_idx].forced_close_to.contains(&other_id),
-                                };
-                                let label = format!(
-                                    "#{} {}",
-                                    other_id,
-                                    Self::student_display_name(other_student, other_idx)
-                                );
-                                if ui.selectable_label(selected, label).clicked() {
-                                    match self.target_edit_mode {
-                                        TargetEditMode::Soft => toggle_close_to_ids.push(other_id),
-                                        TargetEditMode::Forced => toggle_forced_close_to_ids.push(other_id),
-                                    }
-                                }
-                            }
-                        });
-
-                    ui.add_space(8.0);
-                    ui.separator();
-                    ui.label(RichText::new("遠ざかりたい生徒 (sekigae3)").strong());
-                    ui.label("クリックでON/OFFを切り替え");
-
-                    let avoid_list = match self.target_edit_mode {
-                        TargetEditMode::Soft => &self.students[student_idx].avoid,
-                        TargetEditMode::Forced => &self.students[student_idx].forced_avoid,
-                    };
-
-                    let avoid_summary = if avoid_list.is_empty() {
-                        "指定なし".to_string()
-                    } else {
-                        avoid_list
-                            .iter()
-                            .map(|id| {
-                                if let Some(name) = id_to_name.get(id) {
-                                    format!("#{} {}", id, name)
-                                } else {
-                                    format!("#{}", id)
-                                }
-                            })
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    };
-                    ui.label(format!("現在の遠ざかり希望 ({}): {}", self.target_edit_mode.title(), avoid_summary));
-
-                    if ui.button("この生徒の遠ざかり希望をクリア").clicked() {
-                        clear_avoid_for_selected = true;
-                    }
-
-                    ui.add_space(4.0);
-                    egui::ScrollArea::vertical()
-                        .id_salt("targets-avoid-options-scroll")
-                        .max_height(150.0)
-                        .show(ui, |ui| {
-                            for (other_idx, other_student) in self.students.iter().enumerate() {
-                                if other_idx == student_idx {
-                                    continue;
-                                }
-
-                                let Some(&other_id) = assigned_ids.get(other_idx) else {
-                                    continue;
-                                };
-
-                                let selected = match self.target_edit_mode {
-                                    TargetEditMode::Soft => self.students[student_idx].avoid.contains(&other_id),
-                                    TargetEditMode::Forced => self.students[student_idx].forced_avoid.contains(&other_id),
-                                };
-                                let label = format!(
-                                    "#{} {}",
-                                    other_id,
-                                    Self::student_display_name(other_student, other_idx)
-                                );
-                                if ui.selectable_label(selected, label).clicked() {
-                                    match self.target_edit_mode {
-                                        TargetEditMode::Soft => toggle_avoid_ids.push(other_id),
-                                        TargetEditMode::Forced => toggle_forced_avoid_ids.push(other_id),
-                                    }
-                                }
-                            }
-                        });
+                    let (clear_avoid, avoid_toggles) = self.render_relation_editor(
+                        ui,
+                        RelationKind::Avoid,
+                        student_idx,
+                        &assigned_ids,
+                        &id_to_name,
+                    );
+                    clear_avoid_for_selected = clear_avoid;
+                    toggle_avoid_ids = avoid_toggles;
 
                     ui.add_space(8.0);
                     ui.separator();
@@ -2413,7 +2477,9 @@ impl SekigaeApp {
             });
 
             columns[1].group(|ui| {
-                ui.label(RichText::new(format!("{}マップ", self.target_edit_mode.title())).strong());
+                ui.label(
+                    RichText::new(format!("{}マップ", self.target_edit_mode.title())).strong(),
+                );
                 ui.add_space(6.0);
 
                 if let Some(student_idx) = self.selected_student
@@ -2444,10 +2510,11 @@ impl SekigaeApp {
                                             }
 
                                             let selected = match self.target_edit_mode {
-                                                TargetEditMode::Soft => {
-                                                    self.students[student_idx].targets.contains(&idx)
-                                                }
-                                                TargetEditMode::Forced => self.students[student_idx]
+                                                TargetEditMode::Soft => self.students[student_idx]
+                                                    .targets
+                                                    .contains(&idx),
+                                                TargetEditMode::Forced => self.students
+                                                    [student_idx]
                                                     .forced_targets
                                                     .contains(&idx),
                                             };
@@ -2469,7 +2536,10 @@ impl SekigaeApp {
                                                 self.toggle_target(
                                                     student_idx,
                                                     idx,
-                                                    matches!(self.target_edit_mode, TargetEditMode::Forced),
+                                                    matches!(
+                                                        self.target_edit_mode,
+                                                        TargetEditMode::Forced
+                                                    ),
                                                 );
                                             }
                                         }
@@ -2493,148 +2563,29 @@ impl SekigaeApp {
             self.clear_forced_targets(student_idx);
         }
 
-        if clear_close_to_for_selected
-            && let Some(student_idx) = self.selected_student
-            && student_idx < self.students.len()
-            && !self.students[student_idx].close_to.is_empty()
-        {
-            self.students[student_idx].close_to.clear();
-            self.clear_result_if_needed();
-            self.clear_messages();
-        }
-
-        if clear_forced_close_to_for_selected
-            && let Some(student_idx) = self.selected_student
-            && student_idx < self.students.len()
-            && !self.students[student_idx].forced_close_to.is_empty()
-        {
-            self.students[student_idx].forced_close_to.clear();
-            self.clear_result_if_needed();
-            self.clear_messages();
-        }
-
-        if clear_avoid_for_selected
-            && let Some(student_idx) = self.selected_student
-            && student_idx < self.students.len()
-            && !self.students[student_idx].avoid.is_empty()
-        {
-            self.students[student_idx].avoid.clear();
-            self.clear_result_if_needed();
-            self.clear_messages();
-        }
-
-        if clear_forced_avoid_for_selected
-            && let Some(student_idx) = self.selected_student
-            && student_idx < self.students.len()
-            && !self.students[student_idx].forced_avoid.is_empty()
-        {
-            self.students[student_idx].forced_avoid.clear();
-            self.clear_result_if_needed();
-            self.clear_messages();
-        }
-
-        if !toggle_close_to_ids.is_empty()
-            && let Some(student_idx) = self.selected_student
-            && student_idx < self.students.len()
-        {
-            let self_id = assigned_ids.get(student_idx).copied().unwrap_or(0);
-            let mut close_to = self.students[student_idx].close_to.clone();
-
-            for id in toggle_close_to_ids {
-                if id == self_id {
-                    continue;
-                }
-                if let Some(pos) = close_to.iter().position(|target| *target == id) {
-                    close_to.remove(pos);
-                } else {
-                    close_to.push(id);
-                }
+        if let Some(student_idx) = self.selected_student {
+            if clear_close_to_for_selected {
+                self.clear_relation(student_idx, RelationKind::CloseTo, relation_action_mode);
             }
-
-            close_to = Self::sanitize_relation_ids(&close_to, self_id, &valid_ids);
-            if close_to != self.students[student_idx].close_to {
-                self.students[student_idx].close_to = close_to;
-                self.clear_result_if_needed();
-                self.clear_messages();
+            if clear_avoid_for_selected {
+                self.clear_relation(student_idx, RelationKind::Avoid, relation_action_mode);
             }
-        }
-
-        if !toggle_forced_close_to_ids.is_empty()
-            && let Some(student_idx) = self.selected_student
-            && student_idx < self.students.len()
-        {
-            let self_id = assigned_ids.get(student_idx).copied().unwrap_or(0);
-            let mut forced_close_to = self.students[student_idx].forced_close_to.clone();
-
-            for id in toggle_forced_close_to_ids {
-                if id == self_id {
-                    continue;
-                }
-                if let Some(pos) = forced_close_to.iter().position(|target| *target == id) {
-                    forced_close_to.remove(pos);
-                } else {
-                    forced_close_to.push(id);
-                }
-            }
-
-            forced_close_to = Self::sanitize_relation_ids(&forced_close_to, self_id, &valid_ids);
-            if forced_close_to != self.students[student_idx].forced_close_to {
-                self.students[student_idx].forced_close_to = forced_close_to;
-                self.clear_result_if_needed();
-                self.clear_messages();
-            }
-        }
-
-        if !toggle_avoid_ids.is_empty()
-            && let Some(student_idx) = self.selected_student
-            && student_idx < self.students.len()
-        {
-            let self_id = assigned_ids.get(student_idx).copied().unwrap_or(0);
-            let mut avoid = self.students[student_idx].avoid.clone();
-
-            for id in toggle_avoid_ids {
-                if id == self_id {
-                    continue;
-                }
-                if let Some(pos) = avoid.iter().position(|target| *target == id) {
-                    avoid.remove(pos);
-                } else {
-                    avoid.push(id);
-                }
-            }
-
-            avoid = Self::sanitize_relation_ids(&avoid, self_id, &valid_ids);
-            if avoid != self.students[student_idx].avoid {
-                self.students[student_idx].avoid = avoid;
-                self.clear_result_if_needed();
-                self.clear_messages();
-            }
-        }
-
-        if !toggle_forced_avoid_ids.is_empty()
-            && let Some(student_idx) = self.selected_student
-            && student_idx < self.students.len()
-        {
-            let self_id = assigned_ids.get(student_idx).copied().unwrap_or(0);
-            let mut forced_avoid = self.students[student_idx].forced_avoid.clone();
-
-            for id in toggle_forced_avoid_ids {
-                if id == self_id {
-                    continue;
-                }
-                if let Some(pos) = forced_avoid.iter().position(|target| *target == id) {
-                    forced_avoid.remove(pos);
-                } else {
-                    forced_avoid.push(id);
-                }
-            }
-
-            forced_avoid = Self::sanitize_relation_ids(&forced_avoid, self_id, &valid_ids);
-            if forced_avoid != self.students[student_idx].forced_avoid {
-                self.students[student_idx].forced_avoid = forced_avoid;
-                self.clear_result_if_needed();
-                self.clear_messages();
-            }
+            self.apply_relation_toggles(
+                student_idx,
+                RelationKind::CloseTo,
+                relation_action_mode,
+                &toggle_close_to_ids,
+                &assigned_ids,
+                &valid_ids,
+            );
+            self.apply_relation_toggles(
+                student_idx,
+                RelationKind::Avoid,
+                relation_action_mode,
+                &toggle_avoid_ids,
+                &assigned_ids,
+                &valid_ids,
+            );
         }
 
         if register_preset && let Some(student_idx) = self.selected_student {
@@ -2689,7 +2640,9 @@ impl SekigaeApp {
         }
 
         ui.add_space(6.0);
-        let scroll = egui::ScrollArea::both().id_salt("result-seat-map-scroll").auto_shrink([false, false]);
+        let scroll = egui::ScrollArea::both()
+            .id_salt("result-seat-map-scroll")
+            .auto_shrink([false, false]);
         if full_screen {
             // 全画面時は中央寄せせず、左上基準で大きく表示する
             scroll.show(ui, |ui| {
@@ -2712,8 +2665,10 @@ impl SekigaeApp {
                                 if self.empty_seats[idx] {
                                     ui.add_sized(
                                         cell,
-                                        Button::new(RichText::new("空席").color(Color32::WHITE).size(18.0))
-                                            .fill(Color32::from_rgb(120, 120, 120)),
+                                        Button::new(
+                                            RichText::new("空席").color(Color32::WHITE).size(18.0),
+                                        )
+                                        .fill(Color32::from_rgb(120, 120, 120)),
                                     );
                                     continue;
                                 }
@@ -2726,10 +2681,7 @@ impl SekigaeApp {
                                     _ => "-".to_string(),
                                 };
 
-                                ui.add_sized(
-                                    cell,
-                                    Button::new(RichText::new(text).size(18.0)),
-                                );
+                                ui.add_sized(cell, Button::new(RichText::new(text).size(18.0)));
                             }
                             ui.end_row();
                         }
@@ -2763,7 +2715,9 @@ impl SekigaeApp {
                                         } else {
                                             match self.result_display_mode {
                                                 ResultDisplayMode::All => true,
-                                                ResultDisplayMode::Random => self.animation_displayed_indices.contains(&student_idx),
+                                                ResultDisplayMode::Random => self
+                                                    .animation_displayed_indices
+                                                    .contains(&student_idx),
                                             }
                                         };
 
@@ -2793,7 +2747,6 @@ impl SekigaeApp {
         let mut pick_students_json = false;
         let mut export_students_json = false;
         let mut export_seats_json = false;
-        let mut pick_typ_file = false;
         let mut pick_pdf_file = false;
         let mut pick_png_file = false;
         let mut pick_svg_file = false;
@@ -2838,13 +2791,7 @@ impl SekigaeApp {
         }
 
         ui.separator();
-        ui.horizontal(|ui| {
-            ui.label("seats.typ");
-            ui.text_edit_singleline(&mut self.typ_path);
-            if ui.button("参照").clicked() {
-                pick_typ_file = true;
-            }
-        });
+        let pick_typ_file = Self::path_row(ui, "seats.typ", &mut self.typ_path);
 
         ui.horizontal(|ui| {
             ui.label("出力形式");
@@ -2861,33 +2808,15 @@ impl SekigaeApp {
         }
 
         if self.export_pdf {
-            ui.horizontal(|ui| {
-                ui.label("PDF 出力先");
-                ui.text_edit_singleline(&mut self.pdf_output_path);
-                if ui.button("参照").clicked() {
-                    pick_pdf_file = true;
-                }
-            });
+            pick_pdf_file = Self::path_row(ui, "PDF 出力先", &mut self.pdf_output_path);
         }
 
         if self.export_png {
-            ui.horizontal(|ui| {
-                ui.label("PNG 出力先");
-                ui.text_edit_singleline(&mut self.png_output_path);
-                if ui.button("参照").clicked() {
-                    pick_png_file = true;
-                }
-            });
+            pick_png_file = Self::path_row(ui, "PNG 出力先", &mut self.png_output_path);
         }
 
         if self.export_svg {
-            ui.horizontal(|ui| {
-                ui.label("SVG 出力先");
-                ui.text_edit_singleline(&mut self.svg_output_path);
-                if ui.button("参照").clicked() {
-                    pick_svg_file = true;
-                }
-            });
+            pick_svg_file = Self::path_row(ui, "SVG 出力先", &mut self.svg_output_path);
         }
 
         if ui.button("Typstで選択形式を生成").clicked() {
@@ -2895,7 +2824,7 @@ impl SekigaeApp {
         }
 
         if pick_students_json {
-            self.pick_students_json_path();
+            Self::pick_input_path(&mut self.students_json_path, "JSON", &["json"]);
         }
         if export_students_json {
             self.export_students_json();
@@ -2904,16 +2833,16 @@ impl SekigaeApp {
             self.export_seats_json();
         }
         if pick_typ_file {
-            self.pick_typ_path();
+            Self::pick_input_path(&mut self.typ_path, "Typst", &["typ"]);
         }
         if pick_pdf_file {
-            self.pick_pdf_output_path();
+            Self::pick_output_path(&mut self.pdf_output_path, "PDF", &["pdf"], "seats.pdf");
         }
         if pick_png_file {
-            self.pick_png_output_path();
+            Self::pick_output_path(&mut self.png_output_path, "PNG", &["png"], "seats.png");
         }
         if pick_svg_file {
-            self.pick_svg_output_path();
+            Self::pick_output_path(&mut self.svg_output_path, "SVG", &["svg"], "seats.svg");
         }
         if generate_typst {
             self.generate_typst_outputs();
@@ -3025,7 +2954,8 @@ impl eframe::App for SekigaeApp {
         self.apply_text_style(ctx);
         self.poll_solver_result(ctx);
 
-        let should_fullscreen = self.current_stage == UiStage::SolveExport && self.result_fullscreen;
+        let should_fullscreen =
+            self.current_stage == UiStage::SolveExport && self.result_fullscreen;
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(should_fullscreen));
 
         // 結果表示中はアニメーションが進行中のため、毎フレーム再描画
