@@ -128,6 +128,8 @@ impl SekigaeApp {
                 self.students.len()
             ));
             ui.separator();
+            ui.add_space(6.0);
+            ui.label("席をクリックすると空席/使用席を切り替えます");
 
             if new_rows != self.rows || new_cols != self.cols {
                 self.resize_grid(new_rows, new_cols);
@@ -255,7 +257,6 @@ impl SekigaeApp {
         ui.columns(2, |columns| {
             columns[0].group(|ui| {
                 ui.label(RichText::new("学生一覧").strong());
-                ui.add_space(4.0);
 
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
@@ -285,6 +286,9 @@ impl SekigaeApp {
                 });
 
                 ui.separator();
+                ui.add_space(6.0);
+                ui.label("選択して右側で編集してください");
+                ui.add_space(8.0);
                 egui::ScrollArea::vertical()
                     .id_salt("students-list-scroll")
                     .max_height(420.0)
@@ -780,6 +784,12 @@ impl SekigaeApp {
                     });
 
                 ui.separator();
+                ui.add_space(6.0);
+                ui.label(format!(
+                    "{}を選択してください",
+                    self.target_edit_mode.title()
+                ));
+                ui.add_space(8.0);
 
                 if let Some(student_idx) = self.selected_student
                     && student_idx < self.students.len()
