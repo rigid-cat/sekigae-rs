@@ -1,3 +1,5 @@
+// このファイルは実行バイナリに埋め込まれます
+
 #import sys: inputs
 
 #let student_view = inputs.at("student_view", default: false)
