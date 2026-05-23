@@ -1,6 +1,7 @@
 use chrono::Local;
 use eframe::egui::{
-    self, Button, Color32, FontData, FontDefinitions, FontFamily, FontId, RichText, TextStyle,
+    self, Button, Color32, DragValue, FontData, FontDefinitions, FontFamily, FontId, RichText,
+    Slider, TextEdit, TextStyle,
 };
 use rfd::FileDialog;
 use serde::{Deserialize, Serialize};
@@ -25,6 +26,8 @@ const DEFAULT_SEATS_JSON_PATH: &str = "./seats.json";
 const DEFAULT_PDF_OUTPUT_PATH: &str = "./seats.pdf";
 const DEFAULT_PNG_OUTPUT_PATH: &str = "./seats.png";
 const DEFAULT_SVG_OUTPUT_PATH: &str = "./seats.svg";
+const SEAT_CELL_SIZE: [f32; 2] = [87.6, 40.0];
+const RESULT_CELL_SIZE: [f32; 2] = [124.0, 68.0];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum UiStage {
@@ -64,13 +67,6 @@ impl RelationKind {
         }
     }
 
-    fn summary_label(self) -> &'static str {
-        match self {
-            RelationKind::CloseTo => "隣希望",
-            RelationKind::Avoid => "遠ざかり希望",
-        }
-    }
-
     fn clear_button_label(self) -> &'static str {
         match self {
             RelationKind::CloseTo => "この学生の隣希望をクリア",
@@ -90,6 +86,21 @@ impl RelationKind {
 enum ResultDisplayMode {
     All,
     Random,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ResultGridStyle {
+    cell_size: [f32; 2],
+    text_size: f32,
+    reveal_all: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum GridEdit {
+    InsertRow(usize),
+    DeleteRow(usize),
+    InsertCol(usize),
+    DeleteCol(usize),
 }
 
 impl ResultDisplayMode {
@@ -137,7 +148,7 @@ pub struct SekigaeApp {
     selected_student: Option<usize>,
     target_presets: Vec<TargetPreset>,
     new_preset_name: String,
-    tag_forms: Vec<TagForm>,
+    tag_forms: Vec<TagDefinition>,
     use_custom_date: bool,
     custom_date: String,
     students_json_path: String,
@@ -182,12 +193,6 @@ struct StudentForm {
     forced_avoid: Vec<u16>,
 }
 
-#[derive(Clone, Debug)]
-struct TagForm {
-    symbol: String,
-    label: String,
-}
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct TargetPreset {
     name: String,
@@ -205,14 +210,14 @@ struct StudentsJsonDocument {
     target_presets: Vec<TargetPreset>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct TagDefinition {
     label: String,
     #[serde(default, skip_serializing)]
     symbol: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct StudentProfile {
     last_name: String,
     first_name: String,

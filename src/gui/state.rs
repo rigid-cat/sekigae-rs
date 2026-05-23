@@ -67,13 +67,20 @@ impl SekigaeApp {
             .count()
     }
 
-    pub(super) fn clear_result_if_needed(&mut self) {
-        self.result = None;
-    }
-
     pub(super) fn clear_messages(&mut self) {
         self.last_error = None;
         self.last_info = None;
+    }
+
+    pub(super) fn mark_dirty(&mut self) {
+        self.result = None;
+        self.clear_messages();
+    }
+
+    pub(super) fn sorted_unique<T: Ord>(mut values: Vec<T>) -> Vec<T> {
+        values.sort_unstable();
+        values.dedup();
+        values
     }
 
     pub(super) fn set_error(&mut self, msg: impl Into<String>) {
@@ -190,11 +197,17 @@ impl SekigaeApp {
         (plus, minus)
     }
 
-    pub(super) fn default_tag_form() -> TagForm {
-        TagForm {
-            symbol: String::new(),
-            label: String::new(),
-        }
+    pub(super) fn seat_button(
+        label: String,
+        selected: bool,
+        selected_fill: Color32,
+    ) -> Button<'static> {
+        let (text_color, fill) = if selected {
+            (Color32::WHITE, selected_fill)
+        } else {
+            (Color32::BLACK, Color32::from_rgb(220, 220, 220))
+        };
+        Button::new(RichText::new(label).color(text_color)).fill(fill)
     }
 
     pub(super) fn normalize_tag_symbol(symbol: &str) -> String {
@@ -216,46 +229,63 @@ impl SekigaeApp {
     }
 
     pub(super) fn build_tags_map(&self) -> BTreeMap<String, TagDefinition> {
-        let mut tags = BTreeMap::new();
-
-        for form in &self.tag_forms {
-            let symbol = Self::normalize_tag_symbol(&form.symbol);
-            if symbol.is_empty() || tags.contains_key(&symbol) {
-                continue;
-            }
-
-            tags.insert(
-                symbol.clone(),
-                TagDefinition {
-                    label: form.label.trim().to_string(),
-                    symbol,
-                },
-            );
-        }
-
-        tags
+        self.tag_forms
+            .iter()
+            .fold(BTreeMap::new(), |mut tags, form| {
+                let symbol = Self::normalize_tag_symbol(&form.symbol);
+                if !symbol.is_empty() {
+                    tags.entry(symbol.clone()).or_insert_with(|| TagDefinition {
+                        label: form.label.trim().to_string(),
+                        symbol,
+                    });
+                }
+                tags
+            })
     }
 
     pub(super) fn build_tag_symbol_set(&self) -> HashSet<String> {
-        self.build_tags_map().into_keys().collect()
+        self.tag_forms
+            .iter()
+            .map(|tag| Self::normalize_tag_symbol(&tag.symbol))
+            .filter(|symbol| !symbol.is_empty())
+            .collect()
     }
 
     pub(super) fn sanitize_student_tags(
         tags: &[String],
         valid_tags: &HashSet<String>,
     ) -> Vec<String> {
-        let mut sanitized = Vec::new();
         let mut seen = HashSet::new();
+        tags.iter()
+            .map(|tag| tag.trim())
+            .filter(|tag| {
+                !tag.is_empty() && valid_tags.contains(*tag) && seen.insert((*tag).to_string())
+            })
+            .map(str::to_string)
+            .collect()
+    }
 
-        for tag in tags {
-            let tag = tag.trim();
-            if tag.is_empty() || !valid_tags.contains(tag) || !seen.insert(tag.to_string()) {
-                continue;
-            }
-            sanitized.push(tag.to_string());
+    pub(super) fn apply_tag_toggles(&mut self, student_idx: usize, toggled_symbols: Vec<String>) {
+        if toggled_symbols.is_empty() || student_idx >= self.students.len() {
+            return;
         }
 
-        sanitized
+        let valid_tags = self.build_tag_symbol_set();
+        let before = self.students[student_idx].tags.clone();
+        let tags = &mut self.students[student_idx].tags;
+
+        for symbol in toggled_symbols {
+            if let Some(pos) = tags.iter().position(|tag| tag == &symbol) {
+                tags.remove(pos);
+            } else {
+                tags.push(symbol);
+            }
+        }
+
+        *tags = Self::sanitize_student_tags(tags, &valid_tags);
+        if *tags != before {
+            self.mark_dirty();
+        }
     }
 
     pub(super) fn student_tag_symbols_with_defs(
@@ -265,20 +295,15 @@ impl SekigaeApp {
         tags.iter()
             .filter_map(|symbol| tag_defs.contains_key(symbol).then_some(symbol.trim()))
             .filter(|symbol| !symbol.is_empty())
-            .map(|symbol| symbol.to_string())
             .collect::<Vec<_>>()
             .join(" ")
     }
 
     pub(super) fn next_unused_tag_symbol(used: &HashSet<String>) -> String {
-        for index in 1..=usize::MAX {
-            let candidate = format!("T{}", index);
-            if !used.contains(&candidate) {
-                return candidate;
-            }
-        }
-
-        "T".to_string()
+        (1..)
+            .map(|index| format!("T{}", index))
+            .find(|candidate| !used.contains(candidate))
+            .unwrap_or_else(|| "T".to_string())
     }
 
     pub(super) fn remove_tag_from_students(&mut self, tag_symbol: &str) {
@@ -313,34 +338,17 @@ impl SekigaeApp {
         }
     }
 
-    pub(super) fn assign_tag_to_student(
-        student: &mut StudentForm,
-        tag_symbol: &str,
-        selected: bool,
-    ) {
-        if selected {
-            if !student.tags.iter().any(|existing| existing == tag_symbol) {
-                student.tags.push(tag_symbol.to_string());
-            }
-        } else {
-            student.tags.retain(|existing| existing != tag_symbol);
-        }
+    pub(super) fn ensure_valid_selected_student(&mut self) {
+        self.selected_student = (!self.students.is_empty()).then(|| {
+            self.selected_student
+                .filter(|&idx| idx < self.students.len())
+                .unwrap_or(0)
+        });
     }
 
-    pub(super) fn ensure_valid_selected_student(&mut self) {
-        if self.students.is_empty() {
-            self.selected_student = None;
-            return;
-        }
-
-        let needs_reset = match self.selected_student {
-            Some(idx) => idx >= self.students.len(),
-            None => true,
-        };
-
-        if needs_reset {
-            self.selected_student = Some(0);
-        }
+    pub(super) fn selected_student_idx(&self) -> Option<usize> {
+        self.selected_student
+            .filter(|&idx| idx < self.students.len())
     }
 
     pub(super) fn current_stage_index(&self) -> usize {
@@ -364,35 +372,17 @@ impl SekigaeApp {
         }
     }
 
-    pub(super) fn seat_cell_size(&self) -> [f32; 2] {
-        [87.6, 40.0]
-    }
-
-    pub(super) fn result_cell_size(&self) -> [f32; 2] {
-        [124.0, 68.0]
-    }
-
     pub(super) fn render_result_display_mode_selector(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label("表示方法:");
             let mut changed = false;
-            changed |= ui
-                .selectable_value(
-                    &mut self.result_display_mode,
-                    ResultDisplayMode::All,
-                    ResultDisplayMode::All.title(),
-                )
-                .changed();
-            changed |= ui
-                .selectable_value(
-                    &mut self.result_display_mode,
-                    ResultDisplayMode::Random,
-                    ResultDisplayMode::Random.title(),
-                )
-                .changed();
+            for mode in [ResultDisplayMode::All, ResultDisplayMode::Random] {
+                changed |= ui
+                    .selectable_value(&mut self.result_display_mode, mode, mode.title())
+                    .changed();
+            }
 
             ui.separator();
-            // 全画面表示は表示モードとは独立したトグルとする
             if ui
                 .checkbox(&mut self.result_fullscreen, "全画面表示")
                 .changed()
@@ -416,25 +406,21 @@ impl SekigaeApp {
         let mut style = (*ctx.style()).clone();
         let base: f32 = 18.0;
 
-        style.text_styles.insert(
-            TextStyle::Small,
-            FontId::new((base - 2.0).max(8.0), FontFamily::Proportional),
-        );
-        style
-            .text_styles
-            .insert(TextStyle::Body, FontId::new(base, FontFamily::Proportional));
-        style.text_styles.insert(
-            TextStyle::Button,
-            FontId::new(base, FontFamily::Proportional),
-        );
-        style.text_styles.insert(
-            TextStyle::Monospace,
-            FontId::new(base, FontFamily::Monospace),
-        );
-        style.text_styles.insert(
-            TextStyle::Heading,
-            FontId::new(base + 4.0, FontFamily::Proportional),
-        );
+        for (text_style, size, family) in [
+            (
+                TextStyle::Small,
+                (base - 2.0).max(8.0),
+                FontFamily::Proportional,
+            ),
+            (TextStyle::Body, base, FontFamily::Proportional),
+            (TextStyle::Button, base, FontFamily::Proportional),
+            (TextStyle::Monospace, base, FontFamily::Monospace),
+            (TextStyle::Heading, base + 4.0, FontFamily::Proportional),
+        ] {
+            style
+                .text_styles
+                .insert(text_style, FontId::new(size, family));
+        }
 
         ctx.set_style(style);
     }
@@ -444,14 +430,27 @@ impl SekigaeApp {
         empty_seats: &[bool],
         targets: &[usize],
     ) -> Vec<usize> {
-        let mut out = targets
-            .iter()
-            .copied()
-            .filter(|seat_idx| *seat_idx < seat_count && !empty_seats[*seat_idx])
-            .collect::<Vec<_>>();
-        out.sort_unstable();
-        out.dedup();
-        out
+        Self::sorted_unique(
+            targets
+                .iter()
+                .copied()
+                .filter(|seat_idx| *seat_idx < seat_count && !empty_seats[*seat_idx])
+                .collect(),
+        )
+    }
+
+    pub(super) fn remap_seat_indices(
+        indices: &[usize],
+        old_to_new: &[Option<usize>],
+        empty_seats: &[bool],
+    ) -> Vec<usize> {
+        Self::sorted_unique(
+            indices
+                .iter()
+                .filter_map(|old_idx| old_to_new.get(*old_idx).copied().flatten())
+                .filter(|new_idx| *new_idx < empty_seats.len() && !empty_seats[*new_idx])
+                .collect(),
+        )
     }
 
     pub(super) fn sanitize_relation_ids(
@@ -459,14 +458,12 @@ impl SekigaeApp {
         self_id: u16,
         valid_ids: &HashSet<u16>,
     ) -> Vec<u16> {
-        let mut out = ids
-            .iter()
-            .copied()
-            .filter(|id| *id != self_id && valid_ids.contains(id))
-            .collect::<Vec<_>>();
-        out.sort_unstable();
-        out.dedup();
-        out
+        Self::sorted_unique(
+            ids.iter()
+                .copied()
+                .filter(|id| *id != self_id && valid_ids.contains(id))
+                .collect(),
+        )
     }
 
     pub(super) fn relation_ids(
@@ -495,6 +492,23 @@ impl SekigaeApp {
         }
     }
 
+    pub(super) fn target_indices(student: &StudentForm, mode: TargetEditMode) -> &[usize] {
+        match mode {
+            TargetEditMode::Soft => &student.targets,
+            TargetEditMode::Forced => &student.forced_targets,
+        }
+    }
+
+    pub(super) fn target_indices_mut(
+        student: &mut StudentForm,
+        mode: TargetEditMode,
+    ) -> &mut Vec<usize> {
+        match mode {
+            TargetEditMode::Soft => &mut student.targets,
+            TargetEditMode::Forced => &mut student.forced_targets,
+        }
+    }
+
     pub(super) fn normalize_relation_list(
         ids: &mut Vec<u16>,
         self_id: u16,
@@ -515,10 +529,14 @@ impl SekigaeApp {
         valid_ids: &HashSet<u16>,
     ) -> bool {
         let mut changed = false;
-        changed |= Self::normalize_relation_list(&mut student.close_to, self_id, valid_ids);
-        changed |= Self::normalize_relation_list(&mut student.forced_close_to, self_id, valid_ids);
-        changed |= Self::normalize_relation_list(&mut student.avoid, self_id, valid_ids);
-        changed |= Self::normalize_relation_list(&mut student.forced_avoid, self_id, valid_ids);
+        for ids in [
+            &mut student.close_to,
+            &mut student.forced_close_to,
+            &mut student.avoid,
+            &mut student.forced_avoid,
+        ] {
+            changed |= Self::normalize_relation_list(ids, self_id, valid_ids);
+        }
         changed
     }
 
@@ -581,7 +599,11 @@ impl SekigaeApp {
             Self::sanitize_targets_for_grid(seat_count, empty_seats, &student.targets);
         student.forced_targets =
             Self::sanitize_targets_for_grid(seat_count, empty_seats, &student.forced_targets);
-        let forced = student.forced_targets.clone();
+        let forced = student
+            .forced_targets
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>();
         student
             .targets
             .retain(|seat_idx| !forced.contains(seat_idx));
@@ -601,14 +623,13 @@ impl SekigaeApp {
         }
 
         let old_default_budget = old_count;
-        let old_empty = self.empty_seats.clone();
         let mut new_empty = vec![false; new_rows * new_cols];
 
-        for old_idx in 0..old_count {
-            if !old_empty[old_idx] {
+        for (old_idx, mapped) in old_to_new.iter().enumerate().take(old_count) {
+            if !self.empty_seats[old_idx] {
                 continue;
             }
-            if let Some(new_idx) = old_to_new[old_idx]
+            if let Some(new_idx) = *mapped
                 && new_idx < new_empty.len()
             {
                 new_empty[new_idx] = true;
@@ -620,37 +641,15 @@ impl SekigaeApp {
         self.empty_seats = new_empty;
 
         for student in &mut self.students {
-            let mut mapped = student
-                .targets
-                .iter()
-                .filter_map(|old_idx| old_to_new.get(*old_idx).copied().flatten())
-                .filter(|new_idx| *new_idx < self.empty_seats.len() && !self.empty_seats[*new_idx])
-                .collect::<Vec<_>>();
-            mapped.sort_unstable();
-            mapped.dedup();
-            student.targets = mapped;
-
-            let mut forced_mapped = student
-                .forced_targets
-                .iter()
-                .filter_map(|old_idx| old_to_new.get(*old_idx).copied().flatten())
-                .filter(|new_idx| *new_idx < self.empty_seats.len() && !self.empty_seats[*new_idx])
-                .collect::<Vec<_>>();
-            forced_mapped.sort_unstable();
-            forced_mapped.dedup();
-            student.forced_targets = forced_mapped;
+            student.targets =
+                Self::remap_seat_indices(&student.targets, &old_to_new, &self.empty_seats);
+            student.forced_targets =
+                Self::remap_seat_indices(&student.forced_targets, &old_to_new, &self.empty_seats);
         }
 
         for preset in &mut self.target_presets {
-            let mut mapped = preset
-                .targets
-                .iter()
-                .filter_map(|old_idx| old_to_new.get(*old_idx).copied().flatten())
-                .filter(|new_idx| *new_idx < self.empty_seats.len() && !self.empty_seats[*new_idx])
-                .collect::<Vec<_>>();
-            mapped.sort_unstable();
-            mapped.dedup();
-            preset.targets = mapped;
+            preset.targets =
+                Self::remap_seat_indices(&preset.targets, &old_to_new, &self.empty_seats);
         }
 
         if let Some(idx) = self.selected_student
@@ -664,11 +663,15 @@ impl SekigaeApp {
             self.config.budget = self.seat_count();
         }
 
-        self.clear_result_if_needed();
-        self.clear_messages();
+        self.mark_dirty();
     }
 
-    pub(super) fn resize_grid(&mut self, new_rows: usize, new_cols: usize) {
+    pub(super) fn transform_grid(
+        &mut self,
+        new_rows: usize,
+        new_cols: usize,
+        map: impl Fn(usize, usize) -> Option<(usize, usize)>,
+    ) {
         let old_rows = self.rows;
         let old_cols = self.cols;
         let old_count = old_rows * old_cols;
@@ -677,12 +680,16 @@ impl SekigaeApp {
         for (old_idx, mapped) in old_to_new.iter_mut().enumerate().take(old_count) {
             let r = old_idx / old_cols;
             let c = old_idx % old_cols;
-            if r < new_rows && c < new_cols {
-                *mapped = Some(r * new_cols + c);
-            }
+            *mapped = map(r, c).map(|(new_r, new_c)| new_r * new_cols + new_c);
         }
 
         self.apply_grid_transform(new_rows, new_cols, old_to_new);
+    }
+
+    pub(super) fn resize_grid(&mut self, new_rows: usize, new_cols: usize) {
+        self.transform_grid(new_rows, new_cols, |r, c| {
+            (r < new_rows && c < new_cols).then_some((r, c))
+        });
     }
 
     pub(super) fn insert_row_at(&mut self, insert_before: usize) {
@@ -692,17 +699,10 @@ impl SekigaeApp {
 
         let old_rows = self.rows;
         let old_cols = self.cols;
-        let old_count = old_rows * old_cols;
-        let mut old_to_new = vec![None; old_count];
-
-        for (old_idx, mapped) in old_to_new.iter_mut().enumerate().take(old_count) {
-            let r = old_idx / old_cols;
-            let c = old_idx % old_cols;
+        self.transform_grid(old_rows + 1, old_cols, |r, c| {
             let new_r = if r >= insert_before { r + 1 } else { r };
-            *mapped = Some(new_r * old_cols + c);
-        }
-
-        self.apply_grid_transform(old_rows + 1, old_cols, old_to_new);
+            Some((new_r, c))
+        });
     }
 
     pub(super) fn delete_row_at(&mut self, row_idx: usize) {
@@ -712,20 +712,13 @@ impl SekigaeApp {
 
         let old_rows = self.rows;
         let old_cols = self.cols;
-        let old_count = old_rows * old_cols;
-        let mut old_to_new = vec![None; old_count];
-
-        for (old_idx, mapped) in old_to_new.iter_mut().enumerate().take(old_count) {
-            let r = old_idx / old_cols;
-            let c = old_idx % old_cols;
+        self.transform_grid(old_rows - 1, old_cols, |r, c| {
             if r == row_idx {
-                continue;
+                return None;
             }
             let new_r = if r > row_idx { r - 1 } else { r };
-            *mapped = Some(new_r * old_cols + c);
-        }
-
-        self.apply_grid_transform(old_rows - 1, old_cols, old_to_new);
+            Some((new_r, c))
+        });
     }
 
     pub(super) fn insert_col_at(&mut self, insert_before: usize) {
@@ -735,17 +728,10 @@ impl SekigaeApp {
 
         let old_rows = self.rows;
         let old_cols = self.cols;
-        let old_count = old_rows * old_cols;
-        let mut old_to_new = vec![None; old_count];
-
-        for (old_idx, mapped) in old_to_new.iter_mut().enumerate().take(old_count) {
-            let r = old_idx / old_cols;
-            let c = old_idx % old_cols;
+        self.transform_grid(old_rows, old_cols + 1, |r, c| {
             let new_c = if c >= insert_before { c + 1 } else { c };
-            *mapped = Some(r * (old_cols + 1) + new_c);
-        }
-
-        self.apply_grid_transform(old_rows, old_cols + 1, old_to_new);
+            Some((r, new_c))
+        });
     }
 
     pub(super) fn delete_col_at(&mut self, col_idx: usize) {
@@ -755,20 +741,13 @@ impl SekigaeApp {
 
         let old_rows = self.rows;
         let old_cols = self.cols;
-        let old_count = old_rows * old_cols;
-        let mut old_to_new = vec![None; old_count];
-
-        for (old_idx, mapped) in old_to_new.iter_mut().enumerate().take(old_count) {
-            let r = old_idx / old_cols;
-            let c = old_idx % old_cols;
+        self.transform_grid(old_rows, old_cols - 1, |r, c| {
             if c == col_idx {
-                continue;
+                return None;
             }
             let new_c = if c > col_idx { c - 1 } else { c };
-            *mapped = Some(r * (old_cols - 1) + new_c);
-        }
-
-        self.apply_grid_transform(old_rows, old_cols - 1, old_to_new);
+            Some((r, new_c))
+        });
     }
 
     pub(super) fn set_empty_seat_state(&mut self, seat_idx: usize, is_empty: bool) -> bool {
@@ -778,9 +757,12 @@ impl SekigaeApp {
 
         self.empty_seats[seat_idx] = is_empty;
         if is_empty {
-            for student in &mut self.students {
-                student.targets.retain(|idx| *idx != seat_idx);
-                student.forced_targets.retain(|idx| *idx != seat_idx);
+            for targets in self
+                .students
+                .iter_mut()
+                .flat_map(|student| [&mut student.targets, &mut student.forced_targets])
+            {
+                targets.retain(|idx| *idx != seat_idx);
             }
             for preset in &mut self.target_presets {
                 preset.targets.retain(|idx| *idx != seat_idx);
@@ -798,53 +780,32 @@ impl SekigaeApp {
         }
 
         let student = &mut self.students[student_idx];
-
-        if forced {
-            if let Some(pos) = student
-                .forced_targets
-                .iter()
-                .position(|idx| *idx == seat_idx)
-            {
-                student.forced_targets.remove(pos);
-            } else {
-                Self::toggle_target_list(&mut student.forced_targets, seat_idx);
-                if let Some(pos) = student.targets.iter().position(|idx| *idx == seat_idx) {
-                    student.targets.remove(pos);
-                }
-            }
-        } else if let Some(pos) = student.targets.iter().position(|idx| *idx == seat_idx) {
-            student.targets.remove(pos);
+        let (targets, other_targets) = if forced {
+            (&mut student.forced_targets, &mut student.targets)
         } else {
-            Self::toggle_target_list(&mut student.targets, seat_idx);
-            if let Some(pos) = student
-                .forced_targets
-                .iter()
-                .position(|idx| *idx == seat_idx)
-            {
-                student.forced_targets.remove(pos);
-            }
+            (&mut student.targets, &mut student.forced_targets)
+        };
+
+        if let Some(pos) = targets.iter().position(|idx| *idx == seat_idx) {
+            targets.remove(pos);
+        } else {
+            Self::toggle_target_list(targets, seat_idx);
+            other_targets.retain(|idx| *idx != seat_idx);
         }
 
-        self.clear_result_if_needed();
-        self.clear_messages();
+        self.mark_dirty();
     }
 
-    pub(super) fn clear_targets(&mut self, student_idx: usize) {
-        if student_idx >= self.students.len() {
+    pub(super) fn clear_targets_for_mode(&mut self, student_idx: usize, mode: TargetEditMode) {
+        let Some(student) = self.students.get_mut(student_idx) else {
             return;
-        }
-        self.students[student_idx].targets.clear();
-        self.clear_result_if_needed();
-        self.clear_messages();
-    }
+        };
 
-    pub(super) fn clear_forced_targets(&mut self, student_idx: usize) {
-        if student_idx >= self.students.len() {
-            return;
+        let targets = Self::target_indices_mut(student, mode);
+        if !targets.is_empty() {
+            targets.clear();
+            self.mark_dirty();
         }
-        self.students[student_idx].forced_targets.clear();
-        self.clear_result_if_needed();
-        self.clear_messages();
     }
 
     pub(super) fn next_unused_id(used: &HashSet<u16>, mut start: u16) -> u16 {
@@ -866,18 +827,19 @@ impl SekigaeApp {
     }
 
     pub(super) fn assign_student_ids(&self) -> Vec<u16> {
-        let mut assigned = Vec::with_capacity(self.students.len());
         let mut used = HashSet::new();
-
-        for (index, student) in self.students.iter().enumerate() {
-            let fallback = u16::try_from(index + 1).unwrap_or(u16::MAX);
-            let preferred = student.id.unwrap_or(fallback);
-            let id = Self::next_unused_id(&used, preferred);
-            used.insert(id);
-            assigned.push(id);
-        }
-
-        assigned
+        self.students
+            .iter()
+            .enumerate()
+            .map(|(index, student)| {
+                let preferred = student
+                    .id
+                    .unwrap_or_else(|| u16::try_from(index + 1).unwrap_or(u16::MAX));
+                let id = Self::next_unused_id(&used, preferred);
+                used.insert(id);
+                id
+            })
+            .collect()
     }
 
     pub(super) fn student_display_name(student: &StudentForm, idx: usize) -> String {
@@ -949,12 +911,7 @@ impl SekigaeApp {
 
                 let name = Self::student_display_name(entry, i);
                 let number = assigned_ids.get(i).copied().unwrap_or(u16::MAX);
-                let close_to = Self::sanitize_relation_ids(&entry.close_to, number, &valid_ids);
-                let forced_close_to =
-                    Self::sanitize_relation_ids(&entry.forced_close_to, number, &valid_ids);
-                let avoid = Self::sanitize_relation_ids(&entry.avoid, number, &valid_ids);
-                let forced_avoid =
-                    Self::sanitize_relation_ids(&entry.forced_avoid, number, &valid_ids);
+                let sanitize = |ids| Self::sanitize_relation_ids(ids, number, &valid_ids);
                 let tags = Self::sanitize_student_tags(&entry.tags, &valid_tags);
                 Student {
                     name,
@@ -962,10 +919,10 @@ impl SekigaeApp {
                     targets,
                     forced_targets,
                     tags,
-                    close_to,
-                    forced_close_to,
-                    avoid,
-                    forced_avoid,
+                    close_to: sanitize(&entry.close_to),
+                    forced_close_to: sanitize(&entry.forced_close_to),
+                    avoid: sanitize(&entry.avoid),
+                    forced_avoid: sanitize(&entry.forced_avoid),
                 }
             })
             .collect()
@@ -974,17 +931,12 @@ impl SekigaeApp {
     pub(super) fn build_students_map(&self) -> BTreeMap<u16, StudentProfile> {
         let assigned_ids = self.assign_student_ids();
         let valid_tags = self.build_tag_symbol_set();
-        let mut students = BTreeMap::new();
-
-        for (idx, form) in self.students.iter().enumerate() {
-            if idx >= assigned_ids.len() {
-                continue;
-            }
-            let id = assigned_ids[idx];
-            students.insert(id, Self::profile_from_form(form, idx, &valid_tags));
-        }
-
-        students
+        self.students
+            .iter()
+            .zip(assigned_ids)
+            .enumerate()
+            .map(|(idx, (form, id))| (id, Self::profile_from_form(form, idx, &valid_tags)))
+            .collect()
     }
 
     pub(super) fn output_date(&self) -> Result<String, String> {
@@ -1003,7 +955,7 @@ impl SekigaeApp {
         self.empty_seats
             .iter()
             .enumerate()
-            .filter_map(|(idx, is_empty)| if *is_empty { Some(idx) } else { None })
+            .filter_map(|(idx, is_empty)| is_empty.then_some(idx))
             .collect()
     }
 
@@ -1086,38 +1038,30 @@ impl SekigaeApp {
         }
 
         let mode = self.target_edit_mode;
-        let targets = match mode {
-            TargetEditMode::Soft => {
-                self.sanitize_preset_targets(&self.students[student_idx].targets)
-            }
-            TargetEditMode::Forced => {
-                self.sanitize_preset_targets(&self.students[student_idx].forced_targets)
-            }
-        };
+        let targets =
+            self.sanitize_preset_targets(Self::target_indices(&self.students[student_idx], mode));
 
-        if let Some(existing_idx) = self
+        let action = if let Some(existing_idx) = self
             .target_presets
             .iter()
             .position(|preset| preset.name == name && preset.mode == mode)
         {
             self.target_presets[existing_idx].targets = targets;
-            self.set_info(format!(
-                "{}プリセット '{}' を更新しました。",
-                mode.title(),
-                name
-            ));
+            "更新"
         } else {
             self.target_presets.push(TargetPreset {
                 name: name.clone(),
                 mode,
                 targets,
             });
-            self.set_info(format!(
-                "{}プリセット '{}' を追加しました。",
-                mode.title(),
-                name
-            ));
-        }
+            "追加"
+        };
+        self.set_info(format!(
+            "{}プリセット '{}' を{}しました。",
+            mode.title(),
+            name,
+            action
+        ));
     }
 
     pub(super) fn apply_preset_to_student(&mut self, student_idx: usize, preset_idx: usize) {
@@ -1133,16 +1077,9 @@ impl SekigaeApp {
 
         let seat_count = self.seat_count();
         let empty_seats = self.empty_seats.clone();
-        match mode {
-            TargetEditMode::Soft => {
-                self.students[student_idx].targets = targets;
-            }
-            TargetEditMode::Forced => {
-                self.students[student_idx].forced_targets = targets;
-            }
-        }
+        *Self::target_indices_mut(&mut self.students[student_idx], mode) = targets;
         Self::normalize_student_targets(&mut self.students[student_idx], seat_count, &empty_seats);
-        self.clear_result_if_needed();
+        self.mark_dirty();
         self.set_info(format!(
             "{}でプリセット '{}' を適用しました。",
             mode.title(),
@@ -1152,8 +1089,7 @@ impl SekigaeApp {
 
     pub(super) fn preset_summary(&self, preset: &TargetPreset) -> String {
         format!(
-            "[{}] {}",
-            preset.mode.title(),
+            "{}",
             self.targets_to_summary(&preset.targets)
         )
     }

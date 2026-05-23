@@ -2,7 +2,7 @@ use sekigae3::{ILSA, Problem, Seat};
 use std::collections::HashMap;
 use std::io::{Error, ErrorKind, Result};
 
-use crate::model::{AnnealingConfig, SeatingResult, Student};
+use crate::model::{AnnealingConfig, SeatingResult, Student, Target};
 
 struct CorrectedDistanceFn;
 
@@ -25,6 +25,23 @@ fn add_pair_weights(
         {
             let key = if a < b { (a, b) } else { (b, a) };
             *pair_weight_sum.entry(key).or_insert(0.0) += weight;
+        }
+    }
+}
+
+fn add_target_preferences(
+    prefs: &mut HashMap<u16, f32>,
+    targets: &[Target],
+    cols: usize,
+    seat_id_by_global: &[Option<u16>],
+    weight_for_rank: impl Fn(usize) -> f32,
+) {
+    for (rank, target) in targets.iter().enumerate() {
+        let global_idx = target.r.saturating_mul(cols).saturating_add(target.c);
+        if let Some(Some(seat_id)) = seat_id_by_global.get(global_idx) {
+            let weight = weight_for_rank(rank);
+            let pref = prefs.entry(*seat_id).or_insert(weight);
+            *pref = (*pref).max(weight);
         }
     }
 }
@@ -65,10 +82,11 @@ pub fn find_best_seating_with_blocked(
         ));
     }
 
-    let mut number_to_idx = HashMap::new();
-    for (idx, student) in students.iter().enumerate() {
-        number_to_idx.insert(student.number, idx);
-    }
+    let number_to_idx = students
+        .iter()
+        .enumerate()
+        .map(|(idx, student)| (student.number, idx))
+        .collect::<HashMap<_, _>>();
 
     let total_solver_students = movable_seats.len();
 
@@ -80,11 +98,10 @@ pub fn find_best_seating_with_blocked(
         })
         .collect::<Vec<_>>();
 
-    let seat_id_by_global = movable_seats
-        .iter()
-        .enumerate()
-        .map(|(seat_id, global_idx)| (*global_idx, seat_id as u16))
-        .collect::<HashMap<_, _>>();
+    let mut seat_id_by_global = vec![None; seat_count];
+    for (seat_id, &global_idx) in movable_seats.iter().enumerate() {
+        seat_id_by_global[global_idx] = Some(seat_id as u16);
+    }
 
     let randomness = config.randomness.clamp(0.0, 1.0);
     let soft_scale = 1.0 - randomness;
@@ -97,36 +114,22 @@ pub fn find_best_seating_with_blocked(
 
         if soft_scale > 0.0 {
             let target_len = student.targets.len().max(1) as f32;
-
-            for (rank, target) in student.targets.iter().enumerate() {
-                let global_idx = target.r.saturating_mul(cols).saturating_add(target.c);
-                if global_idx >= seat_count || blocked[global_idx] {
-                    continue;
-                }
-
-                if let Some(&seat_id) = seat_id_by_global.get(&global_idx) {
-                    let weight = ((target_len - rank as f32).max(0.1)) * soft_scale;
-                    prefs
-                        .entry(seat_id)
-                        .and_modify(|existing| *existing = existing.max(weight))
-                        .or_insert(weight);
-                }
-            }
+            add_target_preferences(
+                &mut prefs,
+                &student.targets,
+                cols,
+                &seat_id_by_global,
+                |rank| ((target_len - rank as f32).max(0.1)) * soft_scale,
+            );
         }
 
-        for target in &student.forced_targets {
-            let global_idx = target.r.saturating_mul(cols).saturating_add(target.c);
-            if global_idx >= seat_count || blocked[global_idx] {
-                continue;
-            }
-
-            if let Some(&seat_id) = seat_id_by_global.get(&global_idx) {
-                prefs
-                    .entry(seat_id)
-                    .and_modify(|existing| *existing = existing.max(FORCED_WEIGHT))
-                    .or_insert(FORCED_WEIGHT);
-            }
-        }
+        add_target_preferences(
+            &mut prefs,
+            &student.forced_targets,
+            cols,
+            &seat_id_by_global,
+            |_| FORCED_WEIGHT,
+        );
 
         let mut prefs = prefs.into_iter().collect::<Vec<_>>();
         prefs.sort_by_key(|(seat_id, _)| *seat_id);
@@ -135,35 +138,14 @@ pub fn find_best_seating_with_blocked(
 
     let mut pair_weight_sum: HashMap<(usize, usize), f32> = HashMap::new();
     for (a, student) in students.iter().enumerate() {
-        let avoid_weight = -soft_scale;
-        add_pair_weights(
-            &mut pair_weight_sum,
-            &number_to_idx,
-            a,
-            &student.close_to,
-            soft_scale,
-        );
-        add_pair_weights(
-            &mut pair_weight_sum,
-            &number_to_idx,
-            a,
-            &student.forced_close_to,
-            FORCED_PAIR_WEIGHT,
-        );
-        add_pair_weights(
-            &mut pair_weight_sum,
-            &number_to_idx,
-            a,
-            &student.avoid,
-            avoid_weight,
-        );
-        add_pair_weights(
-            &mut pair_weight_sum,
-            &number_to_idx,
-            a,
-            &student.forced_avoid,
-            -FORCED_PAIR_WEIGHT,
-        );
+        for (ids, weight) in [
+            (&student.close_to, soft_scale),
+            (&student.forced_close_to, FORCED_PAIR_WEIGHT),
+            (&student.avoid, -soft_scale),
+            (&student.forced_avoid, -FORCED_PAIR_WEIGHT),
+        ] {
+            add_pair_weights(&mut pair_weight_sum, &number_to_idx, a, ids, weight);
+        }
     }
 
     let mut pair_edges = vec![Vec::<(u16, f32)>::new(); total_solver_students];

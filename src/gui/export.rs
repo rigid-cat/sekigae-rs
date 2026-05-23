@@ -7,13 +7,6 @@ use typst_as_lib::TypstEngine;
 
 impl SekigaeApp {
     pub(super) fn render_export_panel(&mut self, ui: &mut egui::Ui) {
-        let mut pick_pdf_file = false;
-        let mut pick_png_file = false;
-        let mut pick_svg_file = false;
-        let mut generate_outputs = false;
-        let mut students_json_output = false;
-        let mut seats_json_output = false;
-
         ui.label(RichText::new("Export").strong());
         ui.horizontal(|ui| {
             ui.label("日付");
@@ -42,53 +35,38 @@ impl SekigaeApp {
         if self.export_png {
             ui.horizontal(|ui| {
                 ui.label("PNG PPI");
-                ui.add(eframe::egui::DragValue::new(&mut self.png_ppi).range(72..=1200));
+                ui.add(DragValue::new(&mut self.png_ppi).range(72..=1200));
             });
         }
 
-        if self.export_pdf {
-            pick_pdf_file = Self::path_row(ui, "PDF 出力先", "参照", &mut self.pdf_output_path);
+        if self.export_pdf && Self::path_row(ui, "PDF 出力先", "参照", &mut self.pdf_output_path)
+        {
+            Self::pick_output_path(&mut self.pdf_output_path, "PDF", &["pdf"], "seats.pdf");
         }
 
-        if self.export_png {
-            pick_png_file = Self::path_row(ui, "PNG 出力先", "参照", &mut self.png_output_path);
+        if self.export_png && Self::path_row(ui, "PNG 出力先", "参照", &mut self.png_output_path)
+        {
+            Self::pick_output_path(&mut self.png_output_path, "PNG", &["png"], "seats.png");
         }
 
-        if self.export_svg {
-            pick_svg_file = Self::path_row(ui, "SVG 出力先", "参照", &mut self.svg_output_path);
+        if self.export_svg && Self::path_row(ui, "SVG 出力先", "参照", &mut self.svg_output_path)
+        {
+            Self::pick_output_path(&mut self.svg_output_path, "SVG", &["svg"], "seats.svg");
         }
 
         if ui.button("座席表を生成").clicked() {
-            generate_outputs = true;
+            self.generate_document_outputs();
         }
 
         ui.separator();
         CollapsingHeader::new("データ出力").show(ui, |ui| {
-            seats_json_output = Self::path_row(ui, "座席データ", "出力", &mut self.seats_json_path);
-
-            students_json_output =
-                Self::path_row(ui, "学生データ", "出力", &mut self.students_json_path);
+            if Self::path_row(ui, "座席データ", "出力", &mut self.seats_json_path) {
+                self.export_seats_json();
+            }
+            if Self::path_row(ui, "学生データ", "出力", &mut self.students_json_path) {
+                self.export_students_json();
+            }
         });
-
-        if students_json_output {
-            self.export_students_json();
-        }
-        if seats_json_output {
-            self.export_seats_json();
-        }
-
-        if pick_pdf_file {
-            Self::pick_output_path(&mut self.pdf_output_path, "PDF", &["pdf"], "seats.pdf");
-        }
-        if pick_png_file {
-            Self::pick_output_path(&mut self.png_output_path, "PNG", &["png"], "seats.png");
-        }
-        if pick_svg_file {
-            Self::pick_output_path(&mut self.svg_output_path, "SVG", &["svg"], "seats.svg");
-        }
-        if generate_outputs {
-            self.generate_document_outputs();
-        }
     }
 
     pub(super) fn build_seats_json_document(&self) -> Result<SeatsJsonDocument, String> {
@@ -143,22 +121,6 @@ impl SekigaeApp {
         }
     }
 
-    fn ensure_parent_dir(output_path: &Path) -> Result<(), String> {
-        if let Some(parent) = output_path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            fs::create_dir_all(parent).map_err(|err| {
-                format!(
-                    "出力先ディレクトリの作成に失敗しました: {} ({})",
-                    parent.display(),
-                    err
-                )
-            })?;
-        }
-
-        Ok(())
-    }
-
     fn compile_typst_document(
         document: &SeatsJsonDocument,
         student_view: bool,
@@ -191,7 +153,7 @@ impl SekigaeApp {
         document: &PagedDocument,
         output_path: &Path,
     ) -> Result<(), String> {
-        Self::ensure_parent_dir(output_path)?;
+        Self::ensure_parent_dir(output_path, "PDF")?;
 
         let options = typst_pdf::PdfOptions::default();
         let buffer = typst_pdf::pdf(document, &options).map_err(|err| {
@@ -223,12 +185,26 @@ impl SekigaeApp {
         output_path.with_file_name(format!("{}-{}.{}", stem, page + 1, ext))
     }
 
+    fn write_page_output(
+        output_path: &Path,
+        page_count: usize,
+        page: usize,
+        ext: &str,
+        bytes: impl AsRef<[u8]>,
+    ) -> Result<(), String> {
+        fs::write(
+            Self::page_output_path(output_path, page_count, page, ext),
+            bytes,
+        )
+        .map_err(|err| format!("{} 書き込みに失敗しました: {}", ext.to_uppercase(), err))
+    }
+
     fn export_png_from_document(
         document: &PagedDocument,
         output_path: &Path,
         ppi: u16,
     ) -> Result<(), String> {
-        Self::ensure_parent_dir(output_path)?;
+        Self::ensure_parent_dir(output_path, "PNG")?;
         let scale = f32::from(ppi) / 72.0;
 
         for (i, page) in document.pages.iter().enumerate() {
@@ -236,11 +212,7 @@ impl SekigaeApp {
             let png = pixmap
                 .encode_png()
                 .map_err(|err| format!("PNG エンコードに失敗しました (page {}): {}", i + 1, err))?;
-            fs::write(
-                Self::page_output_path(output_path, document.pages.len(), i, "png"),
-                png,
-            )
-            .map_err(|err| format!("PNG 書き込みに失敗しました: {}", err))?;
+            Self::write_page_output(output_path, document.pages.len(), i, "png", png)?;
         }
 
         Ok(())
@@ -250,14 +222,16 @@ impl SekigaeApp {
         document: &PagedDocument,
         output_path: &Path,
     ) -> Result<(), String> {
-        Self::ensure_parent_dir(output_path)?;
+        Self::ensure_parent_dir(output_path, "SVG")?;
 
         for (i, page) in document.pages.iter().enumerate() {
-            fs::write(
-                Self::page_output_path(output_path, document.pages.len(), i, "svg"),
-                typst_svg::svg(page).as_bytes(),
-            )
-            .map_err(|err| format!("SVG 書き込みに失敗しました: {}", err))?;
+            Self::write_page_output(
+                output_path,
+                document.pages.len(),
+                i,
+                "svg",
+                typst_svg::svg(page),
+            )?;
         }
 
         Ok(())
@@ -359,23 +333,16 @@ mod tests {
 
     #[test]
     fn embedded_typst_template_compiles() {
-        let mut students = BTreeMap::new();
-        students.insert(
+        let students = BTreeMap::from([(
             1,
             StudentProfile {
                 last_name: "山田".to_string(),
                 first_name: "太郎".to_string(),
                 last_kana: "ヤマダ".to_string(),
                 first_kana: "タロウ".to_string(),
-                tags: Vec::new(),
-                targets: Vec::new(),
-                forced_targets: Vec::new(),
-                close_to: Vec::new(),
-                forced_close_to: Vec::new(),
-                avoid: Vec::new(),
-                forced_avoid: Vec::new(),
+                ..Default::default()
             },
-        );
+        )]);
 
         let document = SeatsJsonDocument {
             date: "2026/05/23".to_string(),

@@ -34,13 +34,34 @@ impl SekigaeApp {
         }
     }
 
-    pub(super) fn path_row(ui: &mut egui::Ui, label: &str, button_label: &str, path: &mut String) -> bool {
+    pub(super) fn path_row(
+        ui: &mut egui::Ui,
+        label: &str,
+        button_label: &str,
+        path: &mut String,
+    ) -> bool {
         ui.horizontal(|ui| {
             ui.label(label);
             ui.text_edit_singleline(path);
             ui.button(button_label).clicked()
         })
         .inner
+    }
+
+    pub(super) fn ensure_parent_dir(path: &Path, label: &str) -> Result<(), String> {
+        if let Some(parent) = path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent).map_err(|err| {
+                format!(
+                    "{} 出力先ディレクトリの作成に失敗しました: {} ({})",
+                    label,
+                    parent.display(),
+                    err
+                )
+            })?;
+        }
+        Ok(())
     }
 
     pub(super) fn load_students_from_json(&mut self) {
@@ -60,13 +81,9 @@ impl SekigaeApp {
             }
         };
 
-        let mut loaded_presets = Vec::new();
-        let mut loaded_tags = BTreeMap::new();
-        let parsed_students: BTreeMap<u16, StudentProfile> =
+        let (parsed_students, loaded_presets, loaded_tags) =
             if let Ok(document) = serde_json::from_str::<StudentsJsonDocument>(&text) {
-                loaded_presets = document.target_presets;
-                loaded_tags = document.tags;
-                document.students
+                (document.students, document.target_presets, document.tags)
             } else {
                 let raw: BTreeMap<String, StudentProfile> = match serde_json::from_str(&text) {
                     Ok(value) => value,
@@ -90,7 +107,7 @@ impl SekigaeApp {
                     };
                     converted.insert(id, profile);
                 }
-                converted
+                (converted, Vec::new(), BTreeMap::new())
             };
 
         let mut tag_migrations = BTreeMap::new();
@@ -105,7 +122,7 @@ impl SekigaeApp {
                 if key != symbol {
                     tag_migrations.insert(key, symbol.clone());
                 }
-                Some(TagForm {
+                Some(TagDefinition {
                     symbol,
                     label: definition.label,
                 })
@@ -149,13 +166,9 @@ impl SekigaeApp {
             self.upsert_target_preset(preset);
         }
 
-        self.selected_student = if self.students.is_empty() {
-            None
-        } else {
-            Some(0)
-        };
+        self.selected_student = (!self.students.is_empty()).then_some(0);
 
-        self.clear_result_if_needed();
+        self.mark_dirty();
         log::info!(
             "loaded students json: students={}, tags={}, presets={}",
             self.students.len(),
@@ -233,7 +246,7 @@ impl SekigaeApp {
             return;
         }
 
-        self.clear_result_if_needed();
+        self.mark_dirty();
         self.set_info(format!("フォームの希望を {} 人分反映しました。", updated));
     }
 
@@ -242,18 +255,7 @@ impl SekigaeApp {
         value: &T,
         label: &str,
     ) -> Result<(), String> {
-        if let Some(parent) = path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            fs::create_dir_all(parent).map_err(|err| {
-                format!(
-                    "{} 出力先ディレクトリの作成に失敗しました: {} ({})",
-                    label,
-                    parent.display(),
-                    err
-                )
-            })?;
-        }
+        Self::ensure_parent_dir(path, label)?;
 
         let json = serde_json::to_string_pretty(value)
             .map_err(|err| format!("{} のJSON生成に失敗しました: {}", label, err))?;
