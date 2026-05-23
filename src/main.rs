@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // release build でコンソール出さないやつね
+
 #[cfg(feature = "google-fetch")]
 mod fetch;
 mod gui;
