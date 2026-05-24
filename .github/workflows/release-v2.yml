@@ -1,0 +1,252 @@
+name: Release (sekigae-rs)
+
+on:
+  push:
+    branches: ["main"] # v2で運用するなら ["v2"]
+
+concurrency:
+  group: release-sekigae-rs
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  PACKAGE_NAME: sekigae-rs
+  BIN_NAME: sekigae-rs
+
+jobs:
+  plan:
+    name: Decide version/tag
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
+      should_release: ${{ steps.check.outputs.should_release }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Read version from Cargo.toml
+        id: ver
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ver="$(
+            cargo metadata --no-deps --format-version 1 |
+            jq -r --arg name "$PACKAGE_NAME" '
+              .packages[]
+              | select(.name == $name)
+              | .version
+            '
+          )"
+
+          if [ -z "$ver" ] || [ "$ver" = "null" ]; then
+            echo "Package '$PACKAGE_NAME' not found in cargo metadata" >&2
+            exit 1
+          fi
+
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "tag=v$ver" >> "$GITHUB_OUTPUT"
+
+      - name: Check if tag already exists
+        id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git fetch --tags --force
+          tag="${{ steps.ver.outputs.tag }}"
+
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "Tag $tag already exists -> skip release"
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Tag $tag does not exist -> will release"
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: Build release binaries
+    needs: plan
+    if: needs.plan.outputs.should_release == 'true'
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+            artifact_name: sekigae-rs-linux-x86_64
+            output_name: sekigae-rs-linux-x86_64
+            features: ""
+            bin_ext: ""
+
+          - os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+            artifact_name: sekigae-rs-linux-x86_64-google-fetch
+            output_name: sekigae-rs-linux-x86_64-google-fetch
+            features: "google-fetch"
+            bin_ext: ""
+
+          - os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            artifact_name: sekigae-rs-windows-x86_64
+            output_name: sekigae-rs-windows-x86_64
+            features: ""
+            bin_ext: ".exe"
+
+          - os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            artifact_name: sekigae-rs-windows-x86_64-google-fetch
+            output_name: sekigae-rs-windows-x86_64-google-fetch
+            features: "google-fetch"
+            bin_ext: ".exe"
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install Linux build deps
+        if: matrix.os == 'ubuntu-latest'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libgtk-3-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libx11-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libegl1-mesa-dev \
+            libgl1-mesa-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.rust_target }}-${{ matrix.features }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.rust_target }}-${{ matrix.features }}-cargo-
+            ${{ runner.os }}-${{ matrix.rust_target }}-cargo-
+
+      - name: Build package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FEATURES="${{ matrix.features }}"
+
+          if [ -n "$FEATURES" ]; then
+            cargo build \
+              --release \
+              --locked \
+              --target "${{ matrix.rust_target }}" \
+              -p "$PACKAGE_NAME" \
+              --no-default-features \
+              --features "$FEATURES"
+          else
+            cargo build \
+              --release \
+              --locked \
+              --target "${{ matrix.rust_target }}" \
+              -p "$PACKAGE_NAME"
+          fi
+
+      - name: Prepare artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SRC="target/${{ matrix.rust_target }}/release/${BIN_NAME}${{ matrix.bin_ext }}"
+          DST="dist/${{ matrix.output_name }}${{ matrix.bin_ext }}"
+
+          if [ ! -f "$SRC" ]; then
+            echo "Binary not found: $SRC" >&2
+            echo "Check [[bin]] name or BIN_NAME" >&2
+            exit 1
+          fi
+
+          mkdir -p dist
+          cp "$SRC" "$DST"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Create tag + GitHub Release
+    needs: [plan, build]
+    if: needs.plan.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Create and push tag
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tag="${{ needs.plan.outputs.tag }}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git tag "$tag"
+          git push origin "$tag"
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten release files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p release-assets
+          find artifacts -type f -exec cp {} release-assets/ \;
+
+          echo "Release assets:"
+          ls -la release-assets
+
+      - name: Create GitHub Release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.plan.outputs.tag }}
+          name: ${{ needs.plan.outputs.tag }}
+          generate_release_notes: true
+          files: release-assets/*
