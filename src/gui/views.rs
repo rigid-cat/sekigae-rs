@@ -963,6 +963,7 @@ impl SekigaeApp {
     ) {
         let built_students = self.build_students();
         let tag_defs = self.build_tags_map();
+        let reveal_all = self.result_display_mode == ResultDisplayMode::All;
 
         ui.label(RichText::new(format!("sekigae3 cost: {:.3}", result.cost)).strong());
 
@@ -990,8 +991,8 @@ impl SekigaeApp {
                     &tag_defs,
                     ResultGridStyle {
                         cell_size: cell,
-                        text_size: 18.0,
-                        reveal_all: true,
+                        text_size: 20.0,
+                        reveal_all,
                     },
                 );
             });
@@ -1006,7 +1007,7 @@ impl SekigaeApp {
                     ResultGridStyle {
                         cell_size: RESULT_CELL_SIZE,
                         text_size: 13.0,
-                        reveal_all: false,
+                        reveal_all,
                     },
                 );
             });
