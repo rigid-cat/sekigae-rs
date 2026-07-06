@@ -4418,7 +4418,7 @@ dependencies = [
 
 [[package]]
 name = "sekigae-rs"
-version = "1.0.1"
+version = "1.0.2"
 dependencies = [
  "chrono",
  "eframe",
