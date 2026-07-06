@@ -39,19 +39,49 @@ impl SekigaeApp {
             });
         }
 
-        if self.export_pdf && Self::path_row(ui, "PDF 出力先", "参照", &mut self.pdf_output_path)
-        {
-            Self::pick_output_path(&mut self.pdf_output_path, "PDF", &["pdf"], "seats.pdf");
+        if self.export_pdf {
+            let (pick_pdf, export_pdf) =
+                Self::path_action_row(ui, "PDF 出力先", "参照", "出力", &mut self.pdf_output_path);
+            if pick_pdf {
+                if Self::pick_output_path(&mut self.pdf_output_path, "PDF", &["pdf"], "seats.pdf")
+                {
+                    self.generate_document_outputs();
+                    return;
+                }
+            }
+            if export_pdf {
+                self.generate_document_outputs();
+            }
         }
 
-        if self.export_png && Self::path_row(ui, "PNG 出力先", "参照", &mut self.png_output_path)
-        {
-            Self::pick_output_path(&mut self.png_output_path, "PNG", &["png"], "seats.png");
+        if self.export_png {
+            let (pick_png, export_png) =
+                Self::path_action_row(ui, "PNG 出力先", "参照", "出力", &mut self.png_output_path);
+            if pick_png {
+                if Self::pick_output_path(&mut self.png_output_path, "PNG", &["png"], "seats.png")
+                {
+                    self.generate_document_outputs();
+                    return;
+                }
+            }
+            if export_png {
+                self.generate_document_outputs();
+            }
         }
 
-        if self.export_svg && Self::path_row(ui, "SVG 出力先", "参照", &mut self.svg_output_path)
-        {
-            Self::pick_output_path(&mut self.svg_output_path, "SVG", &["svg"], "seats.svg");
+        if self.export_svg {
+            let (pick_svg, export_svg) =
+                Self::path_action_row(ui, "SVG 出力先", "参照", "出力", &mut self.svg_output_path);
+            if pick_svg {
+                if Self::pick_output_path(&mut self.svg_output_path, "SVG", &["svg"], "seats.svg")
+                {
+                    self.generate_document_outputs();
+                    return;
+                }
+            }
+            if export_svg {
+                self.generate_document_outputs();
+            }
         }
 
         if ui.button("座席表を生成").clicked() {
@@ -60,10 +90,33 @@ impl SekigaeApp {
 
         ui.separator();
         CollapsingHeader::new("データ出力").show(ui, |ui| {
-            if Self::path_row(ui, "座席データ", "出力", &mut self.seats_json_path) {
+            let (browse_seats, export_seats) =
+                Self::path_action_row(ui, "座席データ", "参照", "出力", &mut self.seats_json_path);
+            if browse_seats {
+                if Self::pick_output_path(&mut self.seats_json_path, "JSON", &["json"], "seats.json")
+                {
+                    self.export_seats_json();
+                    return;
+                }
+            }
+            if export_seats {
                 self.export_seats_json();
             }
-            if Self::path_row(ui, "学生データ", "出力", &mut self.students_json_path) {
+
+            let (browse_students, export_students) = Self::path_action_row(
+                ui,
+                "学生データ",
+                "参照",
+                "出力",
+                &mut self.students_json_path,
+            );
+            if browse_students {
+                if Self::pick_input_path(&mut self.students_json_path, "JSON", &["json"]) {
+                    self.export_students_json();
+                    return;
+                }
+            }
+            if export_students {
                 self.export_students_json();
             }
         });

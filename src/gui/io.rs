@@ -10,12 +10,15 @@ impl SekigaeApp {
         }
     }
 
-    pub(super) fn pick_input_path(target: &mut String, filter_name: &str, extensions: &[&str]) {
+    pub(super) fn pick_input_path(target: &mut String, filter_name: &str, extensions: &[&str]) -> bool {
         if let Some(path) = FileDialog::new()
             .add_filter(filter_name, extensions)
             .pick_file()
         {
             *target = path.to_string_lossy().to_string();
+            true
+        } else {
+            false
         }
     }
 
@@ -24,26 +27,32 @@ impl SekigaeApp {
         filter_name: &str,
         extensions: &[&str],
         default_file_name: &str,
-    ) {
+    ) -> bool {
         if let Some(path) = FileDialog::new()
             .add_filter(filter_name, extensions)
             .set_file_name(default_file_name)
             .save_file()
         {
             *target = path.to_string_lossy().to_string();
+            true
+        } else {
+            false
         }
     }
 
-    pub(super) fn path_row(
+    pub(super) fn path_action_row(
         ui: &mut egui::Ui,
         label: &str,
-        button_label: &str,
+        browse_label: &str,
+        action_label: &str,
         path: &mut String,
-    ) -> bool {
+    ) -> (bool, bool) {
         ui.horizontal(|ui| {
             ui.label(label);
             ui.text_edit_singleline(path);
-            ui.button(button_label).clicked()
+            let browse = ui.button(browse_label).clicked();
+            let action = ui.button(action_label).clicked();
+            (browse, action)
         })
         .inner
     }
@@ -224,14 +233,21 @@ impl SekigaeApp {
                 continue;
             };
 
-            student.targets =
+            student.targets.clear();
+            student.forced_targets =
                 parse_targets(&pref.seat_targets_raw, rows, cols, &config.seat_preferences);
-            student.forced_targets = parse_targets(
-                &pref.forced_seat_targets_raw,
-                rows,
-                cols,
-                &config.seat_preferences,
-            );
+
+            if !pref.forced_seat_targets_raw.trim().is_empty() {
+                let mut extra_forced_targets = parse_targets(
+                    &pref.forced_seat_targets_raw,
+                    rows,
+                    cols,
+                    &config.seat_preferences,
+                );
+                student.forced_targets.append(&mut extra_forced_targets);
+                student.forced_targets.sort_unstable();
+                student.forced_targets.dedup();
+            }
             student.close_to = pref.close_to.clone();
             student.avoid = pref.avoid.clone();
             Self::normalize_student_targets(student, seat_count, &empty_seats);

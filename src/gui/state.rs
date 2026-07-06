@@ -372,7 +372,11 @@ impl SekigaeApp {
         }
     }
 
-    pub(super) fn render_result_display_mode_selector(&mut self, ui: &mut egui::Ui) {
+    fn render_result_display_mode_selector_impl(
+        &mut self,
+        ui: &mut egui::Ui,
+        show_fullscreen_toggle: bool,
+    ) {
         ui.horizontal(|ui| {
             ui.label("表示方法:");
             let mut changed = false;
@@ -382,12 +386,14 @@ impl SekigaeApp {
                     .changed();
             }
 
-            ui.separator();
-            if ui
-                .checkbox(&mut self.result_fullscreen, "全画面表示")
-                .changed()
-            {
-                changed = true;
+            if show_fullscreen_toggle {
+                ui.separator();
+                if ui
+                    .checkbox(&mut self.result_fullscreen, "全画面表示")
+                    .changed()
+                {
+                    changed = true;
+                }
             }
             if changed {
                 self.animation_displayed_indices.clear();
@@ -400,6 +406,14 @@ impl SekigaeApp {
         } else {
             ui.label("(一括で表示)");
         }
+    }
+
+    pub(super) fn render_result_display_mode_selector(&mut self, ui: &mut egui::Ui) {
+        self.render_result_display_mode_selector_impl(ui, true);
+    }
+
+    pub(super) fn render_result_display_mode_selector_compact(&mut self, ui: &mut egui::Ui) {
+        self.render_result_display_mode_selector_impl(ui, false);
     }
 
     pub(super) fn apply_text_style(&self, ctx: &egui::Context) {

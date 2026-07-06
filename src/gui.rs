@@ -92,6 +92,8 @@ enum ResultDisplayMode {
 struct ResultGridStyle {
     cell_size: [f32; 2],
     text_size: f32,
+    text_color: Color32,
+    cell_fill: Option<Color32>,
     reveal_all: bool,
 }
 
@@ -254,6 +256,7 @@ struct SeatsJsonDocument {
 }
 
 mod app;
+mod fullscreen;
 mod export;
 mod io;
 mod state;

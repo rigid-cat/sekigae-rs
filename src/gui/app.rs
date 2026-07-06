@@ -24,13 +24,25 @@ impl eframe::App for SekigaeApp {
         self.apply_text_style(ctx);
         self.poll_solver_result(ctx);
 
-        let should_fullscreen =
+        let mut should_fullscreen =
             self.current_stage == UiStage::SolveExport && self.result_fullscreen;
+        if should_fullscreen && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.exit_result_fullscreen();
+            should_fullscreen = false;
+        }
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(should_fullscreen));
 
         // 結果表示中はアニメーションが進行中のため、毎フレーム再描画
         if self.result.is_some() {
             ctx.request_repaint();
+        }
+
+        if should_fullscreen {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.add_space(8.0);
+                self.render_fullscreen_result_view(ctx, ui);
+            });
+            return;
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {

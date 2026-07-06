@@ -103,6 +103,16 @@ pub fn find_best_seating_with_blocked(
         seat_id_by_global[global_idx] = Some(seat_id as u16);
     }
 
+    // The `randomness` value (0.0..1.0) from the config is used to blend
+    // between strict preference/forced weights and a softer, more random
+    // weighting. We clamp to [0,1] to avoid invalid values.
+    //
+    // - `randomness == 0.0` => `soft_scale == 1.0`: preferences/forced
+    //   constraints are applied deterministically (no injected softness).
+    // - `randomness == 1.0` => `soft_scale == 0.0`: preference-derived
+    //   soft weights are removed, leaving only forced weights and pair
+    //   penalties; the solver's internal randomness (seeded by `config.seed`)
+    //   then determines layout variation.
     let randomness = config.randomness.clamp(0.0, 1.0);
     let soft_scale = 1.0 - randomness;
     const FORCED_WEIGHT: f32 = 1_000_000.0;
@@ -157,6 +167,10 @@ pub fn find_best_seating_with_blocked(
 
     let problem = Problem::with_distance_fn(seats, want_seats, pair_edges, CorrectedDistanceFn);
 
+    // Create the ILSA solver instance. The `seed` parameter is forwarded to
+    // the solver so that runs can be reproduced exactly when the same seed
+    // is used. Different seeds will cause different internal RNG decisions
+    // inside the solver and therefore different seating outputs.
     let mut ilsa = ILSA::new(&problem, config.seed);
     let budget = if config.budget == 0 {
         total_solver_students.max(1)

@@ -303,18 +303,18 @@ impl SekigaeApp {
                 ui.label(RichText::new("学生一覧").strong());
 
                 ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.text_edit_singleline(&mut self.students_json_path);
-                    if ui.button("参照").clicked() {
-                        pick_students_json = true;
-                    }
-                    if ui.button("読み込む").clicked() {
-                        load_students_json = true;
-                    }
-                    if ui.button("保存").clicked() {
-                        export_students_json = true;
-                    }
-                });
+                let (pick_students_json_now, load_students_json_now) = Self::path_action_row(
+                    ui,
+                    "学生JSON",
+                    "参照",
+                    "読み込む",
+                    &mut self.students_json_path,
+                );
+                pick_students_json |= pick_students_json_now;
+                load_students_json |= load_students_json_now;
+                if ui.button("保存").clicked() {
+                    export_students_json = true;
+                }
 
                 ui.horizontal(|ui| {
                     if ui.button("学生を追加").clicked() {
@@ -469,7 +469,7 @@ impl SekigaeApp {
         }
 
         if pick_students_json {
-            Self::pick_input_path(&mut self.students_json_path, "JSON", &["json"]);
+            load_students_json = Self::pick_input_path(&mut self.students_json_path, "JSON", &["json"]);
         }
 
         if load_students_json {
@@ -929,25 +929,30 @@ impl SekigaeApp {
                 for r in 0..self.rows {
                     for c in 0..self.cols {
                         let idx = r * self.cols + c;
-                        let button = if self.empty_seats[idx] {
-                            Button::new(
-                                RichText::new("空席")
-                                    .color(Color32::WHITE)
-                                    .size(style.text_size),
-                            )
-                            .fill(Color32::from_rgb(120, 120, 120))
+                        let text = if self.empty_seats[idx] {
+                            RichText::new("空席")
+                                .color(style.text_color)
+                                .size(style.text_size)
                         } else {
-                            Button::new(
-                                RichText::new(self.result_cell_text(
-                                    result,
-                                    idx,
-                                    built_students,
-                                    tag_defs,
-                                    style.reveal_all,
-                                ))
-                                .size(style.text_size),
-                            )
+                            RichText::new(self.result_cell_text(
+                                result,
+                                idx,
+                                built_students,
+                                tag_defs,
+                                style.reveal_all,
+                            ))
+                            .color(style.text_color)
+                            .size(style.text_size)
                         };
+                        let button = Button::new(text).fill(if self.empty_seats[idx] {
+                            style
+                                .cell_fill
+                                .unwrap_or(Color32::from_rgb(120, 120, 120))
+                        } else {
+                            style
+                                .cell_fill
+                                .unwrap_or(Color32::from_rgb(220, 220, 220))
+                        });
                         ui.add_sized(style.cell_size, button);
                     }
                     ui.end_row();
@@ -991,7 +996,9 @@ impl SekigaeApp {
                     &tag_defs,
                     ResultGridStyle {
                         cell_size: cell,
-                        text_size: 20.0,
+                        text_size: 26.0,
+                        text_color: Color32::WHITE,
+                        cell_fill: Some(Color32::from_rgb(60, 60, 72)),
                         reveal_all,
                     },
                 );
@@ -1007,6 +1014,8 @@ impl SekigaeApp {
                     ResultGridStyle {
                         cell_size: RESULT_CELL_SIZE,
                         text_size: 13.0,
+                        text_color: Color32::BLACK,
+                        cell_fill: None,
                         reveal_all,
                     },
                 );
@@ -1043,19 +1052,9 @@ impl SekigaeApp {
         let full_screen = self.result_fullscreen;
 
         if full_screen {
-            ui.group(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("席替え実行と結果").strong());
-                    ui.separator();
-                    self.render_result_display_mode_selector(ui);
-                });
-
-                ui.add_space(6.0);
-                run_solver |= self.render_solver_button(ui);
-
-                ui.add_space(8.0);
-                self.render_current_result(ui, true);
-            });
+            run_solver |= self.render_fullscreen_result_toolbar(ui);
+            ui.add_space(6.0);
+            self.render_current_result(ui, true);
         } else {
             ui.columns(2, |columns| {
                 columns[0].group(|ui| {
