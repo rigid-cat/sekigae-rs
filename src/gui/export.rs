@@ -152,7 +152,7 @@ impl SekigaeApp {
                 cols: self.cols,
             },
             seats,
-            students: self.build_students_map(),
+            students: self.build_seat_students_map(),
             tags: self.build_tags_map(),
         })
     }
@@ -388,7 +388,7 @@ mod tests {
     fn embedded_typst_template_compiles() {
         let students = BTreeMap::from([(
             1,
-            StudentProfile {
+            SeatStudentProfile {
                 last_name: "山田".to_string(),
                 first_name: "太郎".to_string(),
                 last_kana: "ヤマダ".to_string(),
@@ -408,5 +408,32 @@ mod tests {
         let compiled = SekigaeApp::compile_typst_document(&document, true, false)
             .expect("embedded Typst template should compile");
         assert_eq!(compiled.pages.len(), 1);
+    }
+
+    #[test]
+    fn seats_json_students_excludes_preferences() {
+        let mut app = SekigaeApp::initial_state();
+        app.students[0] = StudentForm {
+            id: Some(1),
+            last_name: "A".to_string(),
+            first_name: "B".to_string(),
+            close_to: vec![2],
+            forced_close_to: vec![3],
+            avoid: vec![4],
+            forced_avoid: vec![5],
+            ..Default::default()
+        };
+        app.result = Some(SeatingResult {
+            layout: vec![Some(0); app.seat_count()],
+            cost: 0.0,
+        });
+
+        let document = app.build_seats_json_document().expect("document");
+        let json = serde_json::to_string(&document).expect("json");
+
+        assert!(!json.contains("close_to"));
+        assert!(!json.contains("forced_close_to"));
+        assert!(!json.contains("avoid"));
+        assert!(!json.contains("forced_avoid"));
     }
 }

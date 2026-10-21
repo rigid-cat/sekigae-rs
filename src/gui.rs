@@ -240,6 +240,16 @@ struct StudentProfile {
     forced_avoid: Vec<u16>,
 }
 
+#[derive(Clone, Debug, Default, Serialize)]
+struct SeatStudentProfile {
+    last_name: String,
+    first_name: String,
+    last_kana: String,
+    first_kana: String,
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
 #[derive(Serialize)]
 struct SeatsLayout {
     rows: usize,
@@ -251,7 +261,7 @@ struct SeatsJsonDocument {
     date: String,
     layout: SeatsLayout,
     seats: Vec<Vec<Option<u16>>>,
-    students: BTreeMap<u16, StudentProfile>,
+    students: BTreeMap<u16, SeatStudentProfile>,
     tags: BTreeMap<String, TagDefinition>,
 }
 

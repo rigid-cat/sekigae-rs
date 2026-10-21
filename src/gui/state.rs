@@ -892,6 +892,27 @@ impl SekigaeApp {
         }
     }
 
+    pub(super) fn seat_profile_from_form(
+        form: &StudentForm,
+        idx: usize,
+        valid_tags: &HashSet<String>,
+    ) -> SeatStudentProfile {
+        let mut last_name = form.last_name.trim().to_string();
+        let first_name = form.first_name.trim().to_string();
+
+        if last_name.is_empty() && first_name.is_empty() {
+            last_name = format!("学生{}", idx + 1);
+        }
+
+        SeatStudentProfile {
+            last_name,
+            first_name,
+            last_kana: form.last_kana.trim().to_string(),
+            first_kana: form.first_kana.trim().to_string(),
+            tags: Self::sanitize_student_tags(&form.tags, valid_tags),
+        }
+    }
+
     pub(super) fn sanitize_preset_targets(&self, targets: &[usize]) -> Vec<usize> {
         Self::sanitize_targets_for_grid(self.seat_count(), &self.empty_seats, targets)
     }
@@ -950,6 +971,17 @@ impl SekigaeApp {
             .zip(assigned_ids)
             .enumerate()
             .map(|(idx, (form, id))| (id, Self::profile_from_form(form, idx, &valid_tags)))
+            .collect()
+    }
+
+    pub(super) fn build_seat_students_map(&self) -> BTreeMap<u16, SeatStudentProfile> {
+        let assigned_ids = self.assign_student_ids();
+        let valid_tags = self.build_tag_symbol_set();
+        self.students
+            .iter()
+            .zip(assigned_ids)
+            .enumerate()
+            .map(|(idx, (form, id))| (id, Self::seat_profile_from_form(form, idx, &valid_tags)))
             .collect()
     }
 
